@@ -1,3 +1,6 @@
+home-rag-llm.code-workspace
+chroma_db/
+documents/
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

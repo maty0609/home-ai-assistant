@@ -85,6 +85,5 @@ def chat():
         chat_message_history.add_message(ai_message)
         conversation_messages.append(ai_message)
     
-    #print(chat_message_history.messages)
 if __name__ == "__main__":
     chat()
