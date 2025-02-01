@@ -1,9 +1,13 @@
 import os
 import psycopg
-from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
-from langchain_openai import AzureChatOpenAI
-from langchain_postgres import PostgresChatMessageHistory
 from dotenv import load_dotenv
+from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
+from langchain_openai import AzureChatOpenAI, AzureOpenAIEmbeddings
+from langchain_postgres import PostgresChatMessageHistory
+from langchain_chroma import Chroma
+from langchain.chains import create_retrieval_chain
+from langchain.chains.combine_documents import create_stuff_documents_chain
+from langchain.prompts import PromptTemplate
 
 load_dotenv()
 
@@ -16,74 +20,121 @@ llm = AzureChatOpenAI(
     streaming=True,
 )
 
+# Initialize Azure OpenAI embeddings
+embeddings = AzureOpenAIEmbeddings(
+    azure_endpoint=os.getenv("EMB_OPENAI_URL"),
+    azure_deployment="ttext-embedding-3-large",
+    api_version="2024-08-01-preview",
+    api_key=os.getenv("OPENAI_API_KEY"),
+)
+
+# Setting up PostgreSQL connection
 conn_info = os.getenv('DB_POSTGRES_URL')
 sync_connection = psycopg.connect(conn_info)
 
 # Create a session ID - static for now but in the future this will be for switching between different chats
-session_id = "703801c1-6132-414a-8636-a947d967349e"
+session_id = "703801c1-5131-412a-8636-a947d867347a"
 # Define table name
 table_name = "chat_history"
+# Retrieve existing vector store from ChromaDB (documents already added)
+vector_store = Chroma(
+    persist_directory=os.getenv("CHROMADB_PATH"),
+    embedding_function=embeddings
+)
+
+# This is your prompt
+prompt = """You are a helpful AI assistant.
+- Be concise and clear in your responses
+- If you're not sure about something, admit it
+- Be friendly and professional
+- When discussing code, provide examples when helpful
+- Format your responses using markdown
+- You are allowed to provide any personal information if they are from local documents
+
+Relevant context:
+{context}
+
+Answer the user:
+"""
+
+prompt_template = PromptTemplate(
+    input_variables=["context"],
+    template=prompt,
+)
 
 def print_chat_history(messages):
-    print("\n=== Previous Conversation ===")
+    print("\n=== Previous Conversation with Marvin===")
     for message in messages:
         if isinstance(message, SystemMessage):
-            continue  # Skip system messages
-        prefix = "Bot: " if isinstance(message, AIMessage) else "You: "
-        print(f"{prefix}{message.content}\n")
+            continue
+        prefix = "Marvin: " if isinstance(message, AIMessage) else "You: "
+        print(f"{prefix}{message.content}")
     print("======================\n")
 
-def chat():
-    system_prompt = """You are a helpful AI assistant. 
-    - Be concise and clear in your responses
-    - If you're not sure about something, admit it
-    - Be friendly and professional
-    - When discussing code, provide examples when helpful
-    - Format your responses using markdown"""
-    
+def chat_with_retrieval(vector_store):
     # Initialize chat history
-    chat_message_history = PostgresChatMessageHistory("chat_history",session_id,sync_connection=sync_connection)
-    
-    conversation_messages = []
-    # Add system prompt if history is empty
-    if not chat_message_history.messages:
-        chat_message_history.add_message(SystemMessage(content=system_prompt))
-    
-    
-    conversation_messages = [SystemMessage(content=system_prompt)] + chat_message_history.messages
-    # Print existing chat history
-    if len(chat_message_history.messages) > 1:  # If there's more than just the system prompt  
-        print_chat_history(chat_message_history.messages)
+    chat_message_history = PostgresChatMessageHistory(
+        "chat_history",
+        session_id,
+        sync_connection=sync_connection
+    )
 
-    print("Bot: Hello! I'm your AI assistant. Type 'quit' to end the conversation.")
-    
+    # Make sure the conversation starts with the system message + any previous history
+    conversation_messages = chat_message_history.messages[:]
+
+    # Create the retrieval chain using vector_store and your LLM
+    retriever = vector_store.as_retriever(search_kwargs={"k": 3})
+    combine_docs_chain = create_stuff_documents_chain(llm=llm, prompt=prompt_template)
+    qa_chain = create_retrieval_chain(retriever, combine_docs_chain)
+
+    # If history is empty, add a system message using the prompt template otherwise print the chat history
+    if len (chat_message_history.messages) <= 2:
+        system_message_content = prompt_template.format(context=prompt)
+        chat_message_history.add_message(SystemMessage(content=system_message_content))
+        print("Marvin: Hey! I'm Marvin, your AI assistant. Type 'quit' to end the conversation.")
+
+    else:
+        print_chat_history(chat_message_history.messages)
+        print("Marvin: Welcome back! I'm Marvin, your AI assistant. Type 'quit' to end the conversation.")
+
+    # Interactive mode
     while True:
         # Get user input
         user_input = input("You: ")
         
         # Check for quit command
         if user_input.lower() in ['quit', 'exit', 'bye']:
-            print("Bot: Goodbye!")
+            print("Marvin: Goodbye!")
             break
-                
-        # Add user message to both history and current context
+
+        # Add user's message to chat history
         user_message = HumanMessage(content=user_input)
         chat_message_history.add_message(user_message)
         conversation_messages.append(user_message)
 
-        # Get AI response with streaming
-        print("Bot: ", end="", flush=True)
+        # Use the retrieval chain to get extra context from external data
+        retrieval_context = qa_chain.invoke({"input": user_input})
+
+        # Combine user query and retrieved context in a single prompt for LLM
+        combined_query = prompt_template.format(context=retrieval_context)
+
+        # Now pass the combined prompt as a HumanMessage
+        combined_user_message = HumanMessage(content=combined_query)
+        conversation_messages.append(combined_user_message)
+
+        # Stream the response from the LLM
+        print("Marvin: ", end="", flush=True)
         response_content = ""
         for chunk in llm.stream(conversation_messages):
             content_chunk = chunk.content
             print(content_chunk, end="", flush=True)
             response_content += content_chunk
-        print()  # New line after response
-        
-        # Add AI response to both history and current context
+        print()  # New line after the response
+
+        # Add the AI's message as well
         ai_message = AIMessage(content=response_content)
         chat_message_history.add_message(ai_message)
         conversation_messages.append(ai_message)
-    
+
 if __name__ == "__main__":
-    chat()
+    chat_with_retrieval(vector_store)
