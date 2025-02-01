@@ -1,5 +1,6 @@
-langchain-community==0.3.14
-langchain-openai==0.3.0
-langchain-core==0.3.30
+langchain-community==0.3.16
+langchain-openai==0.3.3
+langchain-core==0.3.33
 langchain-postgres==0.0.12
 chromadb==0.6.3
+langchain-chroma==0.2.1
