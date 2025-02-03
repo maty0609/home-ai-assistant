@@ -14,7 +14,7 @@ embeddings = AzureOpenAIEmbeddings(
     api_version="2024-08-01-preview"
 )
 
-def add_documents_to_chroma(documents, persist_directory=os.getenv("CHROMA_DB_PATH")):
+def add_documents_to_chroma(documents, persist_directory=os.getenv("CHROMADB_PATH")):
     """
     Add documents to ChromaDB with Azure OpenAI embeddings
     """
