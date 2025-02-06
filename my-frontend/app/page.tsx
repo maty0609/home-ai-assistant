@@ -15,7 +15,7 @@ export default function Home() {
   const [userInput, setUserInput] = useState("");
 
   // Sidebar width dedicated to session ID
-  const sidebarWidth = "200px";
+  const sidebarWidth = "400px";
 
   // Ref for the scrollable container in the right pane
   const chatContainerRef = useRef<HTMLDivElement>(null);
@@ -56,18 +56,17 @@ export default function Home() {
     }
   }
 
-  // Helper to call your /chat endpoint without streaming, ensuring proper order.
+  // Updated sendMessage to use streaming from the new endpoint.
   async function sendMessage() {
     if (!userInput.trim()) return;
 
-    // Save the current user message
+    // Append the user message.
+    setChatHistory((prev) => [...prev, `User: ${userInput}`]);
     const message = userInput;
-
-    // Append the user message immediately.
-    setChatHistory((prev) => [...prev, `User: ${message}`]);
-    
-    // Clear the input field immediately.
     setUserInput("");
+
+    // Append an entry for the upcoming AI response.
+    setChatHistory((prev) => [...prev, `AI: `]);
 
     try {
       const response = await fetch("http://localhost:8000/chat", {
@@ -79,16 +78,29 @@ export default function Home() {
         }),
       });
 
-      if (!response.ok) {
-        throw new Error(`Error: ${response.statusText}`);
+      // Read from the response stream.
+      const reader = response.body?.getReader();
+      const decoder = new TextDecoder();
+      let streamedText = "";
+
+      if (reader) {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (value) {
+            const chunk = decoder.decode(value);
+            streamedText += chunk;
+            // Update the last entry in chatHistory (the AI message) with the streaming text.
+            setChatHistory((prev) => {
+              const updated = [...prev];
+              updated[updated.length - 1] = `AI: ${streamedText}`;
+              return updated;
+            });
+          }
+        }
       }
-
-      const data = await response.json();
-
-      // Append the AI response after the user message.
-      setChatHistory((prev) => [...prev, `AI: ${data.response}`]);
     } catch (err) {
-      console.error("Failed to send message:", err);
+      console.error("Error streaming chat:", err);
     }
   }
 
@@ -102,13 +114,7 @@ export default function Home() {
 
   // Helper to remove the prefixes "User:" and "AI:" from messages.
   function stripPrefix(text: string): string {
-    if (text.startsWith("User:")) {
-      return text.replace(/^User:\s*/, "");
-    }
-    if (text.startsWith("AI:")) {
-      return text.replace(/^AI:\s*/, "");
-    }
-    return text;
+    return text.replace(/^(User:|AI:)\s*/, "");
   }
 
   return (
@@ -128,7 +134,6 @@ export default function Home() {
           overflow: "hidden",
         }}
       >
-        <h3>Session</h3>
         <div style={{ marginBottom: "1rem" }}>
           <label htmlFor="sessionId" style={{ display: "block" }}>
             Session ID:
@@ -172,21 +177,20 @@ export default function Home() {
             background: "#ffffff",
           }}
         >
-          <h1>My AI Chat</h1>
           <div style={{ marginBottom: "1rem" }}>
-            <h2>Chat History</h2>
             <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
               {chatHistory.map((text, index) => (
                 <li key={index} style={{ marginBottom: "0.5rem" }}>
                   <div
                     style={{
                       display: "inline-block",
-                      background: text.startsWith("User:")
-                        ? "#f0f0f0"
-                        : "#ffffff",
+                      background: text.startsWith("User:") ? "#f0f0f0" : "#ffffff",
                       padding: "0.5rem",
-                      borderRadius: "4px",
+                      borderRadius: "10px",
                       wordBreak: "break-word",
+                      marginLeft: text.startsWith("User:") ? "15rem" : "auto",
+                      marginRight: text.startsWith("User:") ? "auto" : "1rem",
+                      maxWidth: "60%", // Optional: limit the width of messages
                     }}
                   >
                     <ReactMarkdown>{stripPrefix(text)}</ReactMarkdown>
@@ -221,7 +225,7 @@ export default function Home() {
             onChange={(e) => setUserInput(e.target.value)}
             onKeyDown={handleKeyDown}
             style={{
-              width: "33.33vw", // Approximately 1/3 of the full screen width
+              width: "100%", // Approximately 1/3 of the full screen width
               padding: "0.5rem",
               boxSizing: "border-box",
             }}
