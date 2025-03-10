@@ -11,10 +11,15 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 from langchain_openai import AzureChatOpenAI, AzureOpenAIEmbeddings
 from langchain_postgres import PostgresChatMessageHistory
-from langchain_chroma import Chroma
-from langchain.chains import create_retrieval_chain
-from langchain.chains.combine_documents import create_stuff_documents_chain
+from llama_index.core import Settings
+from llama_index.core.query_engine import RetrieverQueryEngine
+from llama_index.vector_stores.chroma import ChromaVectorStore
+#from llama_index.core.retrievers import VectorStoreRetriever
+from llama_index.embeddings.azure_openai import AzureOpenAIEmbedding
+import chromadb
 from langchain.prompts import PromptTemplate
+from llama_index.core import VectorStoreIndex, StorageContext
+from llama_index.core.indices.vector_store.retrievers import VectorIndexAutoRetriever
 
 load_dotenv()
 
@@ -26,7 +31,7 @@ llm = AzureChatOpenAI(
     api_key=os.getenv('AZURE_OPENAI_API_KEY'),
 )
 
-# Initialize Azure OpenAI embeddings
+# Initialize Azure OpenAI embeddings for LangChain (kept for compatibility)
 embeddings = AzureOpenAIEmbeddings(
     azure_endpoint=os.getenv("EMB_OPENAI_URL"),
     azure_deployment="ttext-embedding-3-large",
@@ -34,17 +39,53 @@ embeddings = AzureOpenAIEmbeddings(
     api_key=os.getenv("OPENAI_API_KEY"),
 )
 
+# Initialize LlamaIndex Azure OpenAI embeddings
+llama_embeddings = AzureOpenAIEmbedding(
+    azure_deployment_name="ttext-embedding-3-large",
+    azure_endpoint=os.getenv("EMB_OPENAI_URL"),
+    api_key=os.getenv("OPENAI_API_KEY"),
+    api_version="2024-08-01-preview",
+)
+
+# Set LlamaIndex global settings
+Settings.embed_model = llama_embeddings
+Settings.llm = llm
+
 # Setting up PostgreSQL connection
 conn_info = os.getenv('DB_POSTGRES_URL')
 sync_connection = psycopg.connect(conn_info)
 
 # Define table name
 table_name = "chat_history"
-# Retrieve existing vector store from ChromaDB (documents already added)
-vector_store = Chroma(
-    persist_directory=os.getenv("CHROMADB_PATH"),
-    embedding_function=embeddings
+
+# Setup ChromaDB client and collection
+chroma_client = chromadb.PersistentClient(path=os.getenv("CHROMADB_PATH"))
+#chroma_collection = chroma_client.get_or_create_collection("documents")
+chroma_collection = chroma_client.get_or_create_collection("example_collection")
+# Create LlamaIndex vector store
+vector_store = ChromaVectorStore(chroma_collection=chroma_collection)
+
+# Create storage context
+storage_context = StorageContext.from_defaults(vector_store=vector_store)
+
+# Create index from the existing vector store
+index = VectorStoreIndex.from_vector_store(
+    vector_store,
+    storage_context=storage_context
 )
+
+# Create query engine directly from the index
+# This is the simpler approach that should work reliably
+query_engine = index.as_query_engine(similarity_top_k=3)
+
+# Alternatively, if you specifically need VectorIndexAutoRetriever:
+# from llama_index.core.vector_stores import VectorStoreInfo
+# vector_store_info = VectorStoreInfo(
+#     content_info="Document collection",
+#     metadata_info=[]
+# )
+# auto_retriever = VectorIndexAutoRetriever(index, vector_store_info=vector_store_info)
+# query_engine = RetrieverQueryEngine(auto_retriever)
 
 # This is your prompt
 prompt = """You are a helpful AI assistant.
@@ -135,21 +176,17 @@ async def stream_chat(chat_request: ChatRequest) -> StreamingResponse:
     # Starts with the system message + any previous history
     conversation_messages = chat_message_history.messages[:]
 
-    # Create the retrieval chain using vector_store and your LLM
-    retriever = vector_store.as_retriever(search_kwargs={"k": 3})
-    combine_docs_chain = create_stuff_documents_chain(llm=llm, prompt=prompt_template)
-    qa_chain = create_retrieval_chain(retriever, combine_docs_chain)
-
     # Add user's message to chat history
     user_message = HumanMessage(content=user_input)
     chat_message_history.add_message(user_message)
     conversation_messages.append(user_message)
 
-    # Use the retrieval chain to get extra context from external data
-    retrieval_context = qa_chain.invoke({"input": user_input})
+    # Use LlamaIndex for retrieval
+    retrieval_response = query_engine.query(user_input)
+    retrieved_context = str(retrieval_response)
 
     # Combine user query and retrieved context in a single prompt for LLM
-    combined_query = prompt_template.format(context=retrieval_context)
+    combined_query = prompt_template.format(context=retrieved_context)
 
     # Combined prompt as a HumanMessage
     combined_user_message = HumanMessage(content=combined_query)

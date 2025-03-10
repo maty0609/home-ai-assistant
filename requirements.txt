@@ -8,3 +8,10 @@ fastapi==0.115.8
 langserve==0.3.1
 sse_starlette==2.2.1
 pymupdf==1.25.3
+pymupdf4llm==0.0.17
+llama-index==0.12.16
+llama-index-readers-file==0.4.4
+llama-index-embeddings-azure-openai==0.3.0
+llama-index-vector-stores-chroma==0.4.1
+llama-index-llms-langchain==0.6.0
+sentence_transformers==3.4.1
