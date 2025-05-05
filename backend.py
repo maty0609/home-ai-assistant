@@ -82,6 +82,9 @@ class HistoryRequest(BaseModel):
 class HistoryResponse(BaseModel):
     response: List[str]
 
+class DeleteRequest(BaseModel):
+    session_id: str
+
 app = FastAPI()
 
 app.add_middleware(
@@ -240,6 +243,30 @@ async def stream_chat(chat_request: ChatRequest) -> StreamingResponse:
             yield f"\nStreaming error: {exc}".encode("utf-8")
 
     return StreamingResponse(generate(), media_type="text/plain")
+
+@app.post("/delete-session")
+async def delete_session(req: DeleteRequest):
+    try:
+        session_id = req.session_id
+                
+        with sync_connection.cursor() as cur:
+            # First check if the session exists
+            cur.execute("SELECT COUNT(*) FROM chat_history WHERE session_id = %s", (session_id,))
+            count = cur.fetchone()[0]
+            
+            if count == 0:
+                raise HTTPException(status_code=404, detail="Session not found")
+            
+            # Delete the session
+            cur.execute("DELETE FROM chat_history WHERE session_id = %s", (session_id,))
+            deleted_count = cur.rowcount
+            sync_connection.commit()
+                        
+        return {"status": "success", "deleted_count": deleted_count}
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete session: {str(e)}")
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

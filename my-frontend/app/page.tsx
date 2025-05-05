@@ -136,6 +136,37 @@ export default function Home() {
     return text.replace(/^(User:|AI:)\s*/, "");
   }
 
+  // Add delete session function
+  async function deleteSession(sessionId: string, e: React.MouseEvent) {
+    e.stopPropagation(); // Prevent triggering the conversation click
+    if (!confirm('Are you sure you want to delete this conversation?')) return;
+    
+    try {
+      const response = await fetch("http://localhost:8000/delete-session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: sessionId }),
+      });
+
+      if (response.ok) {
+        // Refresh the sessions list
+        const sessionsResponse = await fetch("http://localhost:8000/sessions");
+        const sessionsData = await sessionsResponse.json();
+        if (sessionsData && sessionsData.sessions) {
+          setSessions(sessionsData.sessions);
+        }
+        
+        // If the deleted session was the current one, create a new session
+        if (sessionId === sessionId) {
+          setSessionId(uuidv4());
+          setChatHistory([]);
+        }
+      }
+    } catch (err) {
+      console.error("Failed to delete session:", err);
+    }
+  }
+
   return (
     <div style={{ display: "flex", minHeight: "100vh" }}>
       {/* LEFT SIDEBAR: Dedicated to Session ID */}
@@ -191,13 +222,36 @@ export default function Home() {
                       whiteSpace: "nowrap",
                       overflow: "hidden",
                       textOverflow: "ellipsis",
-                      maxWidth: "100%"
+                      maxWidth: "100%",
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center"
                     }}>
-                      {typeof session.last_message === 'string' 
-                        ? session.last_message.length > 50 
-                          ? session.last_message.substring(0, 50) + "..."
-                          : session.last_message
-                        : JSON.stringify(session.last_message)}
+                      <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis" }}>
+                        {typeof session.last_message === 'string' 
+                          ? session.last_message.length > 50 
+                            ? session.last_message.substring(0, 50) + "..."
+                            : session.last_message
+                          : JSON.stringify(session.last_message)}
+                      </span>
+                      <button
+                        onClick={(e) => deleteSession(session.session_id, e)}
+                        style={{
+                          background: "none",
+                          border: "none",
+                          color: "#999",
+                          cursor: "pointer",
+                          padding: "4px",
+                          marginLeft: "8px",
+                          fontSize: "1.1em",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center"
+                        }}
+                        title="Delete conversation"
+                      >
+                        ×
+                      </button>
                     </div>
                   </li>
                 ))}
