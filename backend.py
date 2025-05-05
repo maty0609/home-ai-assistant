@@ -15,6 +15,8 @@ from langchain_chroma import Chroma
 from langchain.chains import create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain.prompts import PromptTemplate
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 load_dotenv()
 
@@ -90,34 +92,94 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.get("/sessions")
+def list_sessions():
+    with sync_connection.cursor() as cur:
+        # Get the last message per session with creation date
+        cur.execute("""
+            WITH LastMessages AS (
+                SELECT DISTINCT ON (session_id) 
+                    session_id,
+                    message,
+                    created_at,
+                    ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY created_at DESC) as rn
+                FROM chat_history
+                ORDER BY session_id, created_at DESC
+            )
+            SELECT session_id, message, created_at
+            FROM LastMessages
+            WHERE rn = 1
+            ORDER BY created_at DESC;
+        """)
+        rows = cur.fetchall()
+        
+        # Group sessions by time period
+        now = datetime.now(ZoneInfo("UTC"))
+        thirty_days_ago = now - timedelta(days=30)
+        
+        sessions_by_period = {
+            "Last 30 days": []
+        }
+        
+        # Extract content and group by time period
+        for row in rows:
+            try:
+                message_data = row[1]
+                created_at = row[2]
+                
+                # Ensure created_at is timezone-aware
+                if created_at.tzinfo is None:
+                    created_at = created_at.replace(tzinfo=ZoneInfo("UTC"))
+                
+                if isinstance(message_data, dict):
+                    content = message_data.get('data', {}).get('content', '')
+                else:
+                    content = str(message_data) if message_data is not None else ""
+                
+                session_data = {
+                    "session_id": row[0],
+                    "last_message": content,
+                    "message_type": "ai",
+                    "created_at": created_at.isoformat()
+                }
+                
+                # Group by time period
+                if created_at >= thirty_days_ago:
+                    sessions_by_period["Last 30 days"].append(session_data)
+                else:
+                    # Group older sessions by month
+                    month_key = created_at.strftime("%B %Y")
+                    if month_key not in sessions_by_period:
+                        sessions_by_period[month_key] = []
+                    sessions_by_period[month_key].append(session_data)
+                    
+            except (AttributeError, TypeError) as e:
+                print(f"Error processing session: {e}")
+                continue
+                
+    return {"sessions": sessions_by_period}
+
 @app.post("/history", response_model=HistoryResponse)
 async def history_endpoint(req: HistoryRequest):
     try:
         session_id = req.session_id
+        
         chat_message_history = PostgresChatMessageHistory(
             "chat_history",
             session_id,
             sync_connection=sync_connection
         )
-        # If history is empty, add a system message using the prompt template otherwise print the chat history
-        if len (chat_message_history.messages) <= 2:
-            system_message_content = prompt_template.format(context=prompt)
-            chat_message_history.add_message(SystemMessage(content=system_message_content))
-            return JSONResponse(
-                content={"response": ["Hey! I'm Marvin, your AI assistant."]}
-            )
-        else:
-            timeline = []
-            for msg in chat_message_history.messages:
-                if isinstance(msg, SystemMessage):
-                    # Skip system messages entirely
-                    continue
-                elif isinstance(msg, HumanMessage):
-                    timeline.append(f"User: {msg.content}")
-                elif isinstance(msg, AIMessage):
-                    timeline.append(f"AI: {msg.content}")
-
-            return JSONResponse(content={"response": timeline})
+ 
+        timeline = []
+        for msg in chat_message_history.messages:
+            if isinstance(msg, SystemMessage):
+                # Skip system messages entirely
+                continue
+            elif isinstance(msg, HumanMessage):
+                timeline.append(f"User: {msg.content}")
+            elif isinstance(msg, AIMessage):
+                timeline.append(f"AI: {msg.content}")
+        return JSONResponse(content={"response": timeline})
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
