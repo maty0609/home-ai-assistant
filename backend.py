@@ -17,6 +17,7 @@ from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain.prompts import PromptTemplate
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
+from uuid import uuid4
 
 load_dotenv()
 
@@ -267,6 +268,21 @@ async def delete_session(req: DeleteRequest):
         raise he
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to delete session: {str(e)}")
+
+@app.post("/create-session")
+def create_session():
+    new_session_id = str(uuid4())
+    chat_message_history = PostgresChatMessageHistory(
+        "chat_history",
+        new_session_id,
+        sync_connection=sync_connection
+    )
+    system_message_content = prompt_template.format(context=prompt)
+    chat_message_history.add_message(SystemMessage(content=system_message_content))
+    ai_message = AIMessage(content="Hey! I'm Marvin, your AI assistant. How can I assist you?")
+    chat_message_history.add_message(ai_message)
+
+    return {"session_id": new_session_id}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

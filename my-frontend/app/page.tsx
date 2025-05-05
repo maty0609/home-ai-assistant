@@ -186,8 +186,48 @@ export default function Home() {
       >
 
         {/* 3) Show the fetched sessions and let the user click to switch */}
-        <div style={{ marginTop: "2rem" }}>
-          <h3 style={{ fontWeight: "bold", marginBottom: "1rem" }}>Previous Conversations</h3>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "1rem" }}>
+          <h3 style={{ fontWeight: "bold", marginBottom: 0 }}>Previous Conversations</h3>
+          <button
+            onClick={async () => {
+              try {
+                const res = await fetch("http://localhost:8000/create-session", { method: "POST" });
+                const data = await res.json();
+                if (data && data.session_id) {
+                  setSessionId(data.session_id);
+                  setChatHistory([]);
+                  // Fetch updated sessions list
+                  const sessionsResponse = await fetch("http://localhost:8000/sessions");
+                  const sessionsData = await sessionsResponse.json();
+                  if (sessionsData && sessionsData.sessions) {
+                    setSessions(sessionsData.sessions);
+                  }
+                }
+              } catch (err) {
+                console.error("Failed to create new session:", err);
+              }
+            }}
+            style={{
+              background: "#f5f5f5",
+              border: "none",
+              borderRadius: "50%",
+              width: "2rem",
+              height: "2rem",
+              fontSize: "1.5rem",
+              fontWeight: "bold",
+              color: "#333",
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              marginLeft: "0.5rem"
+            }}
+            title="New conversation"
+          >
+            +
+          </button>
+        </div>
+        <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
           {Object.entries(sessions).map(([period, periodSessions]) => (
             <div key={period} style={{ marginBottom: "1.5rem" }}>
               <h4 style={{ 
@@ -258,7 +298,7 @@ export default function Home() {
               </ul>
             </div>
           ))}
-        </div>
+        </ul>
       </div>
 
       {/* RIGHT MAIN CONTENT AREA */}
