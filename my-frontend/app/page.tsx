@@ -2,11 +2,12 @@
 
 import React, { useState, useRef, useEffect } from "react";
 import ReactMarkdown from "react-markdown";
+import { v4 as uuidv4 } from 'uuid';
 
 // This is a simple Next.js 13 App Router page that mirrors your previous index.js page functionality.
 export default function Home() {
-  // Hard-coded sessionId for simplicity
-  const [sessionId, setSessionId] = useState("my-session-id");
+  // Generate a new UUID for the initial session
+  const [sessionId, setSessionId] = useState(uuidv4());
   
   // Entire chat history from the backend
   const [chatHistory, setChatHistory] = useState<string[]>([]);
@@ -23,6 +24,16 @@ export default function Home() {
   // Ref for the dummy div at the bottom of the chat for scrolling
   const bottomRef = useRef<HTMLDivElement>(null);
 
+  // 1) Add new state for storing available sessions
+  type Session = {
+    session_id: string;
+    last_message: string;
+    message_type: string;
+    created_at: string;
+  };
+
+  const [sessions, setSessions] = useState<Record<string, Session[]>>({});
+
   // Scroll to the bottom whenever chatHistory changes
   useEffect(() => {
     if (bottomRef.current) {
@@ -35,6 +46,18 @@ export default function Home() {
     getHistory();
   }, [sessionId]);
 
+  // 2) Fetch the sessions list on mount (or any time you choose)
+  useEffect(() => {
+    fetch("http://localhost:8000/sessions")
+      .then((res) => res.json())
+      .then((data) => {
+        if (data && data.sessions) {
+          setSessions(data.sessions);
+        }
+      })
+      .catch((err) => console.error("Failed to fetch sessions:", err));
+  }, []);
+
   // Helper to call your /history endpoint
   async function getHistory() {
     try {
@@ -44,15 +67,11 @@ export default function Home() {
         body: JSON.stringify({ session_id: sessionId }),
       });
 
-      if (!response.ok) {
-        throw new Error(`Error: ${response.statusText}`);
-      }
-
       const data = await response.json();
       // data.response should be an array of chat messages
       setChatHistory(data.response);
     } catch (err) {
-      console.error("Failed to fetch history:", err);
+      setChatHistory([]);
     }
   }
 
@@ -131,28 +150,61 @@ export default function Home() {
           top: 0,
           left: 0,
           height: "100vh",
-          overflow: "hidden",
+          overflowY: "auto",
         }}
       >
-        <div style={{ marginBottom: "1rem" }}>
-          <label htmlFor="sessionId" style={{ display: "block" }}>
-            Session ID:
-          </label>
-          <input
-            id="sessionId"
-            type="text"
-            value={sessionId}
-            onChange={(e) => setSessionId(e.target.value)}
-            style={{
-              width: "100%",
-              padding: "0.5rem",
-              boxSizing: "border-box",
-            }}
-          />
+
+        {/* 3) Show the fetched sessions and let the user click to switch */}
+        <div style={{ marginTop: "2rem" }}>
+          <h3 style={{ fontWeight: "bold", marginBottom: "1rem" }}>Previous Conversations</h3>
+          {Object.entries(sessions).map(([period, periodSessions]) => (
+            <div key={period} style={{ marginBottom: "1.5rem" }}>
+              <h4 style={{ 
+                fontSize: "0.9em", 
+                color: "black", 
+                marginBottom: "0.5rem",
+                paddingLeft: "1.2rem",
+                fontWeight: "bold"
+              }}>
+                {period}
+              </h4>
+              <ul style={{ paddingInlineStart: "1.2rem" }}>
+                {periodSessions.map((session: Session) => (
+                  <li
+                    key={session.session_id}
+                    onClick={() => {
+                      setSessionId(session.session_id);
+                      getHistory(); // load that session's history
+                    }}
+                    style={{ 
+                      cursor: "pointer", 
+                      marginBottom: "0.5rem",
+                      padding: "0.5rem",
+                      border: "1px solid #eee",
+                      borderRadius: "4px",
+                      backgroundColor: "#f9f9f9"
+                    }}
+                  >
+                    <div style={{ 
+                      fontSize: "0.9em", 
+                      color: "#666",
+                      whiteSpace: "nowrap",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      maxWidth: "100%"
+                    }}>
+                      {typeof session.last_message === 'string' 
+                        ? session.last_message.length > 50 
+                          ? session.last_message.substring(0, 50) + "..."
+                          : session.last_message
+                        : JSON.stringify(session.last_message)}
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
         </div>
-        <button onClick={getHistory} style={{ width: "100%" }}>
-          Refresh History
-        </button>
       </div>
 
       {/* RIGHT MAIN CONTENT AREA */}
