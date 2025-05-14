@@ -1,7 +1,7 @@
 "use client";  // enable client-side features like hooks or local component state
 
 import React, { useState, useRef, useEffect } from "react";
-import ReactMarkdown from "react-markdown";
+// import ReactMarkdown from "react-markdown"; // No longer needed
 import { v4 as uuidv4 } from 'uuid';
 
 // This is a simple Next.js 13 App Router page that mirrors your previous index.js page functionality.
@@ -339,7 +339,8 @@ export default function Home() {
                       maxWidth: "60%", // Optional: limit the width of messages
                     }}
                   >
-                    <ReactMarkdown>{stripPrefix(text)}</ReactMarkdown>
+                    {/* <ReactMarkdown>{stripPrefix(text)}</ReactMarkdown> */}
+                    <div dangerouslySetInnerHTML={{ __html: stripPrefix(text) }} />
                   </div>
                 </li>
               ))}
