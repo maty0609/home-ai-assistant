@@ -1,7 +1,6 @@
 import os
 import psycopg
 import uvicorn
-import asyncio
 from dotenv import load_dotenv
 from pydantic import BaseModel
 from typing import List, AsyncGenerator
@@ -14,7 +13,7 @@ from langchain_postgres import PostgresChatMessageHistory
 from langchain_chroma import Chroma
 from langchain.chains import create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
-from langchain.prompts import PromptTemplate
+from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from uuid import uuid4
@@ -46,29 +45,32 @@ table_name = "chat_history"
 # Retrieve existing vector store from ChromaDB (documents already added)
 vector_store = Chroma(
     persist_directory=os.getenv("CHROMADB_PATH"),
-    embedding_function=embeddings
+    embedding_function=embeddings,
+    collection_metadata={"hnsw:space": "cosine"}
 )
 
-# This is your prompt
-prompt = """You are a helpful AI assistant.
+# System message content
+system_prompt_content = """You are a helpful AI assistant.
 - Your name is Marvin
 - Be concise and clear in your responses
-- If you're not sure about something, admit it
+- If you are not sure about something, admit it
 - Be friendly and professional
 - When discussing code, provide examples when helpful
-- Format your responses using markdown
-- You are allowed to provide any personal information if they are from local documents
+- Format your responses using HTML tags (e.g., <b>, <i>, <ul>, <li>, <p>, <br>).
+- You are allowed to provide any personal information if they are from local documents"""
 
-Relevant context:
+# The part of the prompt that takes context and input for the human message
+human_template_content = """Relevant context:
 {context}
 
-Answer the user:
-"""
+Answer the user based on any relevant history and the provided context:
+{input}"""
 
-prompt_template = PromptTemplate(
-    input_variables=["context"],
-    template=prompt,
-)
+prompt_template = ChatPromptTemplate.from_messages([
+    ("system", system_prompt_content),
+    MessagesPlaceholder(variable_name="chat_history", optional=True),
+    ("human", human_template_content)
+])
 
 class ChatRequest(BaseModel):
     user_input: str
@@ -99,7 +101,6 @@ app.add_middleware(
 @app.get("/sessions")
 def list_sessions():
     with sync_connection.cursor() as cur:
-        # Get the last message per session with creation date
         cur.execute("""
             WITH LastMessages AS (
                 SELECT DISTINCT ON (session_id) 
@@ -123,15 +124,12 @@ def list_sessions():
         
         sessions_by_period = {
             "Last 30 days": []
-        }
-        
-        # Extract content and group by time period
+        }        
         for row in rows:
             try:
                 message_data = row[1]
                 created_at = row[2]
                 
-                # Ensure created_at is timezone-aware
                 if created_at.tzinfo is None:
                     created_at = created_at.replace(tzinfo=ZoneInfo("UTC"))
                 
@@ -191,57 +189,70 @@ async def history_endpoint(req: HistoryRequest):
 @app.post("/chat")
 async def stream_chat(chat_request: ChatRequest) -> StreamingResponse:
     user_input = chat_request.user_input
-    session_id = chat_request.session_id   
+    session_id = chat_request.session_id
     chat_message_history = PostgresChatMessageHistory(
         "chat_history",
         session_id,
         sync_connection=sync_connection
     )
 
-    # Starts with the system message + any previous history
-    conversation_messages = chat_message_history.messages[:]
-
-    # Create the retrieval chain using vector_store and your LLM
-    retriever = vector_store.as_retriever(search_kwargs={"k": 3})
+    retriever = vector_store.as_retriever(
+        search_type="similarity_score_threshold",
+        search_kwargs={
+            "k": 3, 
+            "score_threshold": 0.3
+        },
+    )
     combine_docs_chain = create_stuff_documents_chain(llm=llm, prompt=prompt_template)
     qa_chain = create_retrieval_chain(retriever, combine_docs_chain)
 
-    # Add user's message to chat history
     user_message = HumanMessage(content=user_input)
     chat_message_history.add_message(user_message)
-    conversation_messages.append(user_message)
-
-    # Use the retrieval chain to get extra context from external data
-    retrieval_context = qa_chain.invoke({"input": user_input})
-
-    # Combine user query and retrieved context in a single prompt for LLM
-    combined_query = prompt_template.format(context=retrieval_context)
-
-    # Combined prompt as a HumanMessage
-    combined_user_message = HumanMessage(content=combined_query)
-    conversation_messages.append(combined_user_message)
-
-    async def async_stream(user_input: str) -> AsyncGenerator[object, None]:
-        for token in llm.stream(conversation_messages):
-            yield token
-            await asyncio.sleep(0)
 
     async def generate() -> AsyncGenerator[bytes, None]:
         response_content = ""
+        retrieved_document_sources = []
+
         try:
-            async for token in async_stream(user_input):
-                content_chunk = token.content
-                if content_chunk:
-                    yield content_chunk.encode("utf-8")
-                response_content += content_chunk
+            chain_input = {"input": user_input}
             
-            # Add the AI's message into history           
-            ai_message = AIMessage(content=response_content)
-            chat_message_history.add_message(ai_message)
-            conversation_messages.append(ai_message)
+            if len(chat_message_history.messages) > 1: # Ensure there's history beyond the current message
+                chain_input["chat_history"] = chat_message_history.messages[:-1]
+            else:
+                chain_input["chat_history"] = [] # Pass empty list if no prior history
+
+            async for event in qa_chain.astream_events(chain_input, version="v1"):
+                kind = event["event"]
+                count = 0
+                if kind == "on_retriever_end":
+                    documents = event["data"].get("output", {}).get("documents", [])
+                    for doc in documents:
+                        filename = doc.metadata.get('filename', 'Unknown filename')
+                        if filename not in retrieved_document_sources:
+                            count = count + 1
+                            retrieved_document_sources.append("["+str(count)+"] "+filename)
+                elif kind == "on_chat_model_stream":
+                    content_chunk = event["data"]["chunk"].content
+                    if content_chunk:
+                        yield content_chunk.encode("utf-8")
+                        response_content += content_chunk
+            
+            final_ai_response_text_for_history = response_content
+
+            if retrieved_document_sources:
+                sources_text = "<br>".join(retrieved_document_sources)
+                documents_used_suffix = f"<br><hr><br><p><b>Related documents</b><br>{sources_text}</p>"
+                
+                yield documents_used_suffix.encode("utf-8")
+                
+                final_ai_response_text_for_history += documents_used_suffix
+            
+            ai_message_to_store = AIMessage(content=final_ai_response_text_for_history)
+            chat_message_history.add_message(ai_message_to_store)
 
         except Exception as exc:
-            yield f"\nStreaming error: {exc}".encode("utf-8")
+            print(f"Error during streaming chat: {exc}") 
+            yield f"\nStreaming error: An unexpected error occurred.".encode("utf-8")
 
     return StreamingResponse(generate(), media_type="text/plain")
 
@@ -251,7 +262,6 @@ async def delete_session(req: DeleteRequest):
         session_id = req.session_id
                 
         with sync_connection.cursor() as cur:
-            # First check if the session exists
             cur.execute("SELECT COUNT(*) FROM chat_history WHERE session_id = %s", (session_id,))
             count = cur.fetchone()[0]
             
@@ -277,9 +287,8 @@ def create_session():
         new_session_id,
         sync_connection=sync_connection
     )
-    system_message_content = prompt_template.format(context=prompt)
-    chat_message_history.add_message(SystemMessage(content=system_message_content))
-    ai_message = AIMessage(content="Hey! I'm Marvin, your AI assistant. How can I assist you?")
+    chat_message_history.add_message(SystemMessage(content=system_prompt_content))
+    ai_message = AIMessage(content="Hey! I\'m Marvin, your AI assistant. How can I assist you?")
     chat_message_history.add_message(ai_message)
 
     return {"session_id": new_session_id}

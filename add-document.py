@@ -23,7 +23,8 @@ def add_documents_to_chroma(documents, persist_directory=os.getenv("CHROMADB_PAT
     vector_store = Chroma.from_documents(
         documents=documents,
         embedding=embeddings,
-        persist_directory=persist_directory
+        persist_directory=persist_directory,
+        collection_metadata={"hnsw:space": "cosine"}
     )
     
     return vector_store
@@ -41,7 +42,7 @@ def load_txt_files(directory_path):
                     content = file.read()
                     doc = Document(
                         page_content=content,
-                        metadata={"source": file_path, "category": "txt"}
+                        metadata={"source": file_path, "category": "txt", "filename": filename}
                     )
                     documents.append(doc)
                     print("Document " + filename + " added!")
@@ -66,7 +67,7 @@ def load_pdf_files(directory_path):
                     text += page.get_text() + "\n"
                 documents.append(Document(
                     page_content=text,
-                    metadata={"source": file_path, "category": "pdf"}
+                    metadata={"source": file_path, "category": "pdf", "filename": filename}
                 ))
                 print("Document " + filename + " added!")
             except Exception as e:
