@@ -1,23 +1,18 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 
 export default function Home() {
   // Hard-coded sessionId for simplicity
   const [sessionId, setSessionId] = useState('my-session-id');
   
-  // The user’s message and the AI’s latest response
+  // The user's message and the AI's latest response
   const [userInput, setUserInput] = useState('');
   const [latestResponse, setLatestResponse] = useState('');
 
   // Entire chat history from the backend
   const [chatHistory, setChatHistory] = useState([]);
 
-  // Fetch the chat history on initial load or session ID change
-  useEffect(() => {
-    getHistory();
-  }, [sessionId]);
-
   // Helper to call your /history endpoint
-  async function getHistory() {
+  const getHistory = useCallback(async () => {
     try {
       const response = await fetch('http://localhost:8000/history', {
         method: 'POST',
@@ -34,7 +29,12 @@ export default function Home() {
     } catch (err) {
       console.error('Failed to fetch history:', err);
     }
-  }
+  }, [sessionId]);
+
+  // Fetch the chat history on initial load or session ID change
+  useEffect(() => {
+    getHistory();
+  }, [getHistory]);
 
   // Helper to call your /chat endpoint
   async function sendMessage() {

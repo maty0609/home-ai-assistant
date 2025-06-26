@@ -1,6 +1,6 @@
 "use client";  // enable client-side features like hooks or local component state
 
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useEffect, useCallback } from "react";
 // import ReactMarkdown from "react-markdown"; // No longer needed
 import { v4 as uuidv4 } from 'uuid';
 
@@ -41,10 +41,28 @@ export default function Home() {
     }
   }, [chatHistory]);
 
+  // Helper to call your /history endpoint
+  const getHistory = useCallback(async () => {
+    try {
+      const response = await fetch("http://localhost:8000/history", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: sessionId }),
+      });
+
+      const data = await response.json();
+      // data.response should be an array of chat messages
+      setChatHistory(data.response);
+    } catch (err) {
+      console.error("Failed to fetch history:", err);
+      setChatHistory([]);
+    }
+  }, [sessionId]);
+
   // Fetch the chat history on initial load or when sessionId changes
   useEffect(() => {
     getHistory();
-  }, [sessionId]);
+  }, [getHistory]);
 
   // 2) Fetch the sessions list on mount (or any time you choose)
   useEffect(() => {
@@ -57,23 +75,6 @@ export default function Home() {
       })
       .catch((err) => console.error("Failed to fetch sessions:", err));
   }, []);
-
-  // Helper to call your /history endpoint
-  async function getHistory() {
-    try {
-      const response = await fetch("http://localhost:8000/history", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ session_id: sessionId }),
-      });
-
-      const data = await response.json();
-      // data.response should be an array of chat messages
-      setChatHistory(data.response);
-    } catch (err) {
-      setChatHistory([]);
-    }
-  }
 
   // Updated sendMessage to use streaming from the new endpoint.
   async function sendMessage() {
