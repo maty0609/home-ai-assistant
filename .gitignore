@@ -1,6 +1,7 @@
 home-rag-llm.code-workspace
 chroma_db/
 documents/
+postgre_db/
 .DS_Store
 # Byte-compiled / optimized / DLL files
 __pycache__/

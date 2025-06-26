@@ -1,0 +1,59 @@
+services:
+  postgres:
+    image: postgres:15
+    container_name: home-ai-postgres
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+    ports:
+      - ${POSTGRES_PORT}:${POSTGRES_PORT}
+    volumes:
+      - ${POSTGRES_DB_PATH}:/var/lib/postgresql/data
+    networks:
+      - home-ai-network
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: home-ai-backend
+    ports:
+      - ${BACKEND_PORT}:${BACKEND_PORT}
+    environment:
+      - AZURE_OPENAI_URL=${AZURE_OPENAI_URL}
+      - AZURE_OPENAI_API_KEY=${AZURE_OPENAI_API_KEY}
+      - EMB_OPENAI_URL=${EMB_OPENAI_URL}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - DB_POSTGRES_URL=${DB_POSTGRES_URL_DOCKER}
+      - CHROMADB_PATH=/app/chroma_db
+    volumes:
+      - ${CHROMADB_PATH}:/app/chroma_db
+    networks:
+      - home-ai-network
+    restart: unless-stopped
+    depends_on:
+      - postgres
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: home-ai-frontend
+    ports:
+      - ${FRONTEND_PORT}:${FRONTEND_PORT}
+    environment:
+      - NEXT_PUBLIC_API_URL=http://backend:${BACKEND_PORT}
+    depends_on:
+      - backend
+    networks:
+      - home-ai-network
+    restart: unless-stopped
+
+networks:
+  home-ai-network:
+    driver: bridge
+
+volumes:
+  chroma_data: 
