@@ -1,0 +1,160 @@
+name: Update Dependencies
+
+on:
+  schedule:
+    # Run every Monday at 9 AM UTC
+    - cron: '0 9 * * 1'
+  workflow_dispatch:
+
+jobs:
+  # Update Python dependencies
+  update-python:
+    name: Update Python Dependencies
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.13'
+
+    - name: Install pip-tools
+      run: |
+        python -m pip install --upgrade pip
+        pip install pip-tools
+
+    - name: Update Python dependencies
+      run: |
+        cd backend
+        # Generate requirements.txt from requirements.in (if you have one)
+        # pip-compile --upgrade requirements.in
+        # Or update existing requirements.txt
+        pip install pip-review
+        pip-review --auto --output-file requirements.txt
+
+    - name: Create Pull Request
+      uses: peter-evans/create-pull-request@v5
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        commit-message: 'chore: update Python dependencies'
+        title: 'chore: update Python dependencies'
+        body: |
+          This PR updates Python dependencies to their latest versions.
+          
+          ## Changes
+          - Updated Python packages in `backend/requirements.txt`
+          
+          ## Checklist
+          - [ ] Tests pass
+          - [ ] No breaking changes
+          - [ ] Security vulnerabilities addressed
+        branch: update-python-deps
+        delete-branch: true
+
+  # Update Node.js dependencies
+  update-node:
+    name: Update Node.js Dependencies
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '24'
+        cache: 'npm'
+        cache-dependency-path: frontend/package-lock.json
+
+    - name: Install npm-check-updates
+      run: npm install -g npm-check-updates
+
+    - name: Update Node.js dependencies
+      run: |
+        cd frontend
+        ncu --upgrade
+        npm install
+
+    - name: Create Pull Request
+      uses: peter-evans/create-pull-request@v5
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        commit-message: 'chore: update Node.js dependencies'
+        title: 'chore: update Node.js dependencies'
+        body: |
+          This PR updates Node.js dependencies to their latest versions.
+          
+          ## Changes
+          - Updated npm packages in `frontend/package.json` and `frontend/package-lock.json`
+          
+          ## Checklist
+          - [ ] Tests pass
+          - [ ] No breaking changes
+          - [ ] Security vulnerabilities addressed
+        branch: update-node-deps
+        delete-branch: true
+
+  # Security audit
+  security-audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    needs: [update-python, update-node]
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.13'
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '24'
+
+    - name: Audit Python dependencies
+      run: |
+        cd backend
+        pip install safety
+        safety check --json --output safety-report.json || true
+
+    - name: Audit Node.js dependencies
+      run: |
+        cd frontend
+        npm audit --audit-level moderate || true
+
+    - name: Comment on PRs
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const { data: prs } = await github.rest.pulls.list({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            state: 'open',
+            head: 'update-python-deps:update-python-deps'
+          });
+          
+          if (prs.length > 0) {
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prs[0].number,
+              body: '🔒 Security audit completed. Please review any security findings.'
+            });
+          } 
