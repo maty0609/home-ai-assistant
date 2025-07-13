@@ -1,11 +1,13 @@
 "use client";  // enable client-side features like hooks or local component state
 
 import React, { useState, useRef, useEffect, useCallback } from "react";
-// import ReactMarkdown from "react-markdown"; // No longer needed
+import { useSession, signOut } from "next-auth/react";
 import { v4 as uuidv4 } from 'uuid';
 
 // This is a simple Next.js 13 App Router page that mirrors your previous index.js page functionality.
 export default function Home() {
+  const { data: session, status } = useSession();
+  
   // Generate a new UUID for the initial session
   const [sessionId, setSessionId] = useState(uuidv4());
   
@@ -33,6 +35,7 @@ export default function Home() {
   };
 
   const [sessions, setSessions] = useState<Record<string, Session[]>>({});
+  const [sessionsLoading, setSessionsLoading] = useState(true);
 
   // Scroll to the bottom whenever chatHistory changes
   useEffect(() => {
@@ -43,38 +46,80 @@ export default function Home() {
 
   // Helper to call your /history endpoint
   const getHistory = useCallback(async () => {
+    if (status !== "authenticated") return;
+    
     try {
-      const response = await fetch("http://localhost:8000/history", {
+      const headers: HeadersInit = { "Content-Type": "application/json" };
+      
+      // Add authentication header if session exists
+      if (session?.accessToken) {
+        headers.Authorization = `Bearer ${session.accessToken}`;
+      }
+
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/history`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({ session_id: sessionId }),
       });
 
       const data = await response.json();
       // data.response should be an array of chat messages
-      setChatHistory(data.response);
+      setChatHistory(data.response || []);
     } catch (err) {
       console.error("Failed to fetch history:", err);
       setChatHistory([]);
     }
-  }, [sessionId]);
+  }, [sessionId, session?.accessToken, status]);
 
   // Fetch the chat history on initial load or when sessionId changes
   useEffect(() => {
-    getHistory();
-  }, [getHistory]);
+    if (status === "authenticated") {
+      getHistory();
+    }
+  }, [getHistory, status]);
 
   // 2) Fetch the sessions list on mount (or any time you choose)
   useEffect(() => {
-    fetch("http://localhost:8000/sessions")
+    if (status !== "authenticated") return;
+    
+    setSessionsLoading(true);
+    
+    const headers: HeadersInit = {};
+    if (session?.accessToken) {
+      headers.Authorization = `Bearer ${session.accessToken}`;
+    }
+
+    fetch(`${process.env.NEXT_PUBLIC_API_URL}/sessions`, { headers })
       .then((res) => res.json())
       .then((data) => {
         if (data && data.sessions) {
           setSessions(data.sessions);
+        } else {
+          setSessions({});
         }
       })
-      .catch((err) => console.error("Failed to fetch sessions:", err));
-  }, []);
+      .catch((err) => {
+        console.error("Failed to fetch sessions:", err);
+        setSessions({});
+      })
+      .finally(() => {
+        setSessionsLoading(false);
+      });
+  }, [session?.accessToken, status]);
+
+  // Show loading state while checking authentication
+  if (status === "loading") {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="text-lg">Loading...</div>
+      </div>
+    );
+  }
+
+  // Redirect to sign in if not authenticated
+  if (status === "unauthenticated") {
+    return null; // Middleware will handle redirect
+  }
 
   // Updated sendMessage to use streaming from the new endpoint.
   async function sendMessage() {
@@ -89,9 +134,14 @@ export default function Home() {
     setChatHistory((prev) => [...prev, `AI: `]);
 
     try {
-      const response = await fetch("http://localhost:8000/chat", {
+      const headers: HeadersInit = { "Content-Type": "application/json" };
+      if (session?.accessToken) {
+        headers.Authorization = `Bearer ${session.accessToken}`;
+      }
+
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/chat`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({
           user_input: message,
           session_id: sessionId,
@@ -143,15 +193,24 @@ export default function Home() {
     if (!confirm('Are you sure you want to delete this conversation?')) return;
     
     try {
-      const response = await fetch("http://localhost:8000/delete-session", {
+      const headers: HeadersInit = { "Content-Type": "application/json" };
+      if (session?.accessToken) {
+        headers.Authorization = `Bearer ${session.accessToken}`;
+      }
+
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/delete-session`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({ session_id: sessionId }),
       });
 
       if (response.ok) {
         // Refresh the sessions list
-        const sessionsResponse = await fetch("http://localhost:8000/sessions");
+        const headers: HeadersInit = {};
+        if (session?.accessToken) {
+          headers.Authorization = `Bearer ${session.accessToken}`;
+        }
+        const sessionsResponse = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/sessions`, { headers });
         const sessionsData = await sessionsResponse.json();
         if (sessionsData && sessionsData.sessions) {
           setSessions(sessionsData.sessions);
@@ -170,6 +229,46 @@ export default function Home() {
 
   return (
     <div style={{ display: "flex", minHeight: "100vh" }}>
+      {/* Header with user info and logout */}
+      <div
+        style={{
+          position: "fixed",
+          top: 0,
+          left: 0,
+          right: 0,
+          height: "60px",
+          background: "#f8f9fa",
+          borderBottom: "1px solid #dee2e6",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          padding: "0 20px",
+          zIndex: 1000,
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center" }}>
+          <h1 style={{ margin: 0, fontSize: "1.5rem", fontWeight: "bold" }}>
+            Marvin AI Assistant
+          </h1>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+          <span>Welcome, {session?.user?.name || session?.user?.email}</span>
+          <button
+            onClick={() => signOut()}
+            style={{
+              padding: "8px 16px",
+              background: "#dc3545",
+              color: "white",
+              border: "none",
+              borderRadius: "4px",
+              cursor: "pointer",
+            }}
+          >
+            Sign Out
+          </button>
+        </div>
+      </div>
+
       {/* LEFT SIDEBAR: Dedicated to Session ID */}
       <div
         style={{
@@ -179,9 +278,9 @@ export default function Home() {
           boxSizing: "border-box",
           background: "#fff",
           position: "fixed",
-          top: 0,
+          top: "60px",
           left: 0,
-          height: "100vh",
+          height: "calc(100vh - 60px)",
           overflowY: "auto",
         }}
       >
@@ -192,13 +291,21 @@ export default function Home() {
           <button
             onClick={async () => {
               try {
-                const res = await fetch("http://localhost:8000/create-session", { method: "POST" });
+                const headers: HeadersInit = {};
+                if (session?.accessToken) {
+                  headers.Authorization = `Bearer ${session.accessToken}`;
+                }
+                
+                const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/create-session`, { 
+                  method: "POST",
+                  headers
+                });
                 const data = await res.json();
                 if (data && data.session_id) {
                   setSessionId(data.session_id);
                   setChatHistory([]);
                   // Fetch updated sessions list
-                  const sessionsResponse = await fetch("http://localhost:8000/sessions");
+                  const sessionsResponse = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/sessions`, { headers });
                   const sessionsData = await sessionsResponse.json();
                   if (sessionsData && sessionsData.sessions) {
                     setSessions(sessionsData.sessions);
@@ -229,76 +336,82 @@ export default function Home() {
           </button>
         </div>
         <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
-          {Object.entries(sessions).map(([period, periodSessions]) => (
-            <div key={period} style={{ marginBottom: "1.5rem" }}>
-              <h4 style={{ 
-                fontSize: "0.9em", 
-                color: "black", 
-                marginBottom: "0.5rem",
-                paddingLeft: "1.2rem",
-                fontWeight: "bold"
-              }}>
-                {period}
-              </h4>
-              <ul style={{ paddingInlineStart: "1.2rem" }}>
-                {periodSessions.map((session: Session) => (
-                  <li
-                    key={session.session_id}
-                    onClick={() => {
-                      setSessionId(session.session_id);
-                      getHistory(); // load that session's history
-                    }}
-                    style={{ 
-                      cursor: "pointer", 
-                      marginBottom: "0.5rem",
-                      padding: "0.5rem",
-                      border: "1px solid #eee",
-                      borderRadius: "4px",
-                      backgroundColor: "#f9f9f9"
-                    }}
-                  >
-                    <div style={{ 
-                      fontSize: "0.9em", 
-                      color: "#666",
-                      whiteSpace: "nowrap",
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                      maxWidth: "100%",
-                      display: "flex",
-                      justifyContent: "space-between",
-                      alignItems: "center"
-                    }}>
-                      <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis" }}>
-                        {typeof session.last_message === 'string' 
-                          ? session.last_message.length > 50 
-                            ? session.last_message.substring(0, 50) + "..."
-                            : session.last_message
-                          : JSON.stringify(session.last_message)}
-                      </span>
-                      <button
-                        onClick={(e) => deleteSession(session.session_id, e)}
-                        style={{
-                          background: "none",
-                          border: "none",
-                          color: "#999",
-                          cursor: "pointer",
-                          padding: "4px",
-                          marginLeft: "8px",
-                          fontSize: "1.1em",
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "center"
-                        }}
-                        title="Delete conversation"
-                      >
-                        ×
-                      </button>
-                    </div>
-                  </li>
-                ))}
-              </ul>
+          {sessionsLoading ? (
+            <div style={{ textAlign: "center", padding: "1rem", color: "#666" }}>
+              Loading conversations...
             </div>
-          ))}
+          ) : (
+            Object.entries(sessions || {}).map(([period, periodSessions]) => (
+              <div key={period} style={{ marginBottom: "1.5rem" }}>
+                <h4 style={{ 
+                  fontSize: "0.9em", 
+                  color: "black", 
+                  marginBottom: "0.5rem",
+                  paddingLeft: "1.2rem",
+                  fontWeight: "bold"
+                }}>
+                  {period}
+                </h4>
+                <ul style={{ paddingInlineStart: "1.2rem" }}>
+                  {(periodSessions || []).map((session: Session) => (
+                    <li
+                      key={session.session_id}
+                      onClick={() => {
+                        setSessionId(session.session_id);
+                        getHistory(); // load that session's history
+                      }}
+                      style={{ 
+                        cursor: "pointer", 
+                        marginBottom: "0.5rem",
+                        padding: "0.5rem",
+                        border: "1px solid #eee",
+                        borderRadius: "4px",
+                        backgroundColor: "#f9f9f9"
+                      }}
+                    >
+                      <div style={{ 
+                        fontSize: "0.9em", 
+                        color: "#666",
+                        whiteSpace: "nowrap",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        maxWidth: "100%",
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "center"
+                      }}>
+                        <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis" }}>
+                          {typeof session.last_message === 'string' 
+                            ? session.last_message.length > 50 
+                              ? session.last_message.substring(0, 50) + "..."
+                              : session.last_message
+                            : JSON.stringify(session.last_message)}
+                        </span>
+                        <button
+                          onClick={(e) => deleteSession(session.session_id, e)}
+                          style={{
+                            background: "none",
+                            border: "none",
+                            color: "#999",
+                            cursor: "pointer",
+                            padding: "4px",
+                            marginLeft: "8px",
+                            fontSize: "1.1em",
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center"
+                          }}
+                          title="Delete conversation"
+                        >
+                          ×
+                        </button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))
+          )}
         </ul>
       </div>
 
@@ -306,9 +419,10 @@ export default function Home() {
       <div
         style={{
           marginLeft: sidebarWidth,
+          marginTop: "60px",
           display: "flex",
           flexDirection: "column",
-          height: "100vh",
+          height: "calc(100vh - 60px)",
         }}
       >
         {/* Chat History */}
@@ -326,7 +440,7 @@ export default function Home() {
         >
           <div style={{ marginBottom: "1rem" }}>
             <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
-              {chatHistory.map((text, index) => (
+              {(chatHistory || []).map((text, index) => (
                 <li key={index} style={{ marginBottom: "0.5rem" }}>
                   <div
                     style={{
