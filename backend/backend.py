@@ -3,10 +3,11 @@ import psycopg
 import uvicorn
 from dotenv import load_dotenv
 from pydantic import BaseModel
-from typing import List, AsyncGenerator
-from fastapi import FastAPI, HTTPException
+from typing import List, AsyncGenerator, Optional
+from fastapi import FastAPI, HTTPException, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 from langchain_openai import AzureChatOpenAI, AzureOpenAIEmbeddings
 from langchain_postgres import PostgresChatMessageHistory
@@ -17,8 +18,13 @@ from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from uuid import uuid4
+from jose import JWTError, jwt
+from argon2 import PasswordHasher
 
 load_dotenv()
+
+password_hasher = PasswordHasher()
+security = HTTPBearer()
 
 # Initialize Azure OpenAI
 llm = AzureChatOpenAI(
@@ -72,6 +78,24 @@ prompt_template = ChatPromptTemplate.from_messages([
     ("human", human_template_content)
 ])
 
+# Pydantic models
+class UserCreate(BaseModel):
+    email: str
+    name: str
+    password: str
+
+class UserLogin(BaseModel):
+    email: str
+    password: str
+
+class User(BaseModel):
+    id: int
+    email: str
+    name: str
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str
 class ChatRequest(BaseModel):
     user_input: str
     session_id: str
@@ -88,6 +112,68 @@ class HistoryResponse(BaseModel):
 class DeleteRequest(BaseModel):
     session_id: str
 
+
+# Authentication functions
+def verify_password(plain_password, hashed_password):
+    try:
+        password_hasher.verify(hashed_password, plain_password)
+        return True
+    except:
+        return False
+
+def get_password_hash(password):
+    return password_hasher.hash(password)
+
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.now() + expires_delta
+    else:
+        expire = datetime.now() + timedelta(minutes=15)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, os.getenv("SECRET_KEY"), algorithm="HS256")
+    return encoded_jwt
+
+def get_user_by_email(email: str):
+    with sync_connection.cursor() as cur:
+        cur.execute("SELECT id, email, name, hashed_password FROM users WHERE email = %s", (email,))
+        user = cur.fetchone()
+        if user:
+            return {
+                "id": user[0],
+                "email": user[1],
+                "name": user[2],
+                "hashed_password": user[3]
+            }
+    return None
+
+def authenticate_user(email: str, password: str):
+    user = get_user_by_email(email)
+    if not user:
+        return False
+    if not verify_password(password, user["hashed_password"]):
+        return False
+    return user
+
+async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload = jwt.decode(credentials.credentials, os.getenv("SECRET_KEY"), algorithms=["HS256"])
+        email: str = payload.get("sub")
+        if email is None:
+            raise credentials_exception
+    except JWTError:
+        raise credentials_exception
+    
+    user = get_user_by_email(email)
+    if user is None:
+        raise credentials_exception
+    return user
+
 app = FastAPI()
 
 app.add_middleware(
@@ -98,8 +184,61 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Authentication endpoints
+@app.post("/auth/register", response_model=User)
+async def register_user(user: UserCreate):
+    # Check if user already exists
+    existing_user = get_user_by_email(user.email)
+    if existing_user:
+        raise HTTPException(
+            status_code=400,
+            detail="Email already registered"
+        )
+    
+    # Hash password and create user
+    hashed_password = get_password_hash(user.password)
+    
+    with sync_connection.cursor() as cur:
+        cur.execute(
+            "INSERT INTO users (email, name, hashed_password) VALUES (%s, %s, %s) RETURNING id, email, name",
+            (user.email, user.name, hashed_password)
+        )
+        new_user = cur.fetchone()
+        sync_connection.commit()
+    
+    return {
+        "id": new_user[0],
+        "email": new_user[1],
+        "name": new_user[2]
+    }
+
+@app.post("/auth/login", response_model=Token)
+async def login_user(user_credentials: UserLogin):
+    user = authenticate_user(user_credentials.email, user_credentials.password)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    access_token_expires = timedelta(minutes=30)
+    access_token = create_access_token(
+        data={"sub": user["email"]}, expires_delta=access_token_expires
+    )
+    
+    return {"access_token": access_token, "token_type": "bearer"}
+
+@app.get("/auth/me", response_model=User)
+async def read_users_me(current_user: dict = Depends(get_current_user)):
+    return {
+        "id": current_user["id"],
+        "email": current_user["email"],
+        "name": current_user["name"]
+    }
+
 @app.get("/sessions")
-def list_sessions():
+def list_sessions(current_user: dict = Depends(get_current_user)):
     with sync_connection.cursor() as cur:
         cur.execute("""
             WITH LastMessages AS (
@@ -162,7 +301,7 @@ def list_sessions():
     return {"sessions": sessions_by_period}
 
 @app.post("/history", response_model=HistoryResponse)
-async def history_endpoint(req: HistoryRequest):
+async def history_endpoint(req: HistoryRequest, current_user: dict = Depends(get_current_user)):
     try:
         session_id = req.session_id
         
@@ -187,7 +326,7 @@ async def history_endpoint(req: HistoryRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/chat")
-async def stream_chat(chat_request: ChatRequest) -> StreamingResponse:
+async def stream_chat(chat_request: ChatRequest, current_user: dict = Depends(get_current_user)) -> StreamingResponse:
     user_input = chat_request.user_input
     session_id = chat_request.session_id
     chat_message_history = PostgresChatMessageHistory(
@@ -216,10 +355,10 @@ async def stream_chat(chat_request: ChatRequest) -> StreamingResponse:
         try:
             chain_input = {"input": user_input}
             
-            if len(chat_message_history.messages) > 1: # Ensure there's history beyond the current message
+            if len(chat_message_history.messages) > 1:
                 chain_input["chat_history"] = chat_message_history.messages[:-1]
             else:
-                chain_input["chat_history"] = [] # Pass empty list if no prior history
+                chain_input["chat_history"] = []
 
             async for event in qa_chain.astream_events(chain_input, version="v1"):
                 kind = event["event"]
@@ -257,7 +396,7 @@ async def stream_chat(chat_request: ChatRequest) -> StreamingResponse:
     return StreamingResponse(generate(), media_type="text/plain")
 
 @app.post("/delete-session")
-async def delete_session(req: DeleteRequest):
+async def delete_session(req: DeleteRequest, current_user: dict = Depends(get_current_user)):
     try:
         session_id = req.session_id
                 
