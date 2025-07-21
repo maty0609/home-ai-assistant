@@ -36,17 +36,49 @@ export default function SignIn() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50 py-12 px-4 sm:px-6 lg:px-8">
-      <div className="max-w-md w-full space-y-8">
+    <div style={{
+      minHeight: '100vh',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: '#f9fafb',
+      padding: '3rem 1rem'
+    }}>
+      <div style={{
+        maxWidth: '28rem',
+        width: '100%',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '2rem'
+      }}>
         <div>
-          <h2 className="mt-6 text-center text-3xl font-extrabold text-gray-900">
+          <h2 style={{
+            marginTop: '1.5rem',
+            textAlign: 'center',
+            fontSize: '1.875rem',
+            fontWeight: '800',
+            color: '#111827'
+          }}>
             Sign in to Marvin
           </h2>
         </div>
-        <form className="mt-8 space-y-6" onSubmit={handleSubmit}>
-          <div className="rounded-md shadow-sm -space-y-px">
+        
+        <form style={{
+          marginTop: '2rem',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '1.5rem'
+        }} onSubmit={handleSubmit}>
+          
+          <div style={{
+            borderRadius: '0.375rem',
+            boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.05)',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '-1px'
+          }}>
             <div>
-              <label htmlFor="email" className="sr-only">
+              <label htmlFor="email" style={{ display: 'none' }}>
                 Email address
               </label>
               <input
@@ -55,14 +87,25 @@ export default function SignIn() {
                 type="email"
                 autoComplete="email"
                 required
-                className="appearance-none rounded-none relative block w-full px-3 py-2 border border-gray-300 placeholder-gray-500 text-gray-900 rounded-t-md focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 focus:z-10 sm:text-sm"
+                style={{
+                  appearance: 'none',
+                  borderRadius: '0.375rem 0.375rem 0 0',
+                  position: 'relative',
+                  display: 'block',
+                  width: '100%',
+                  padding: '0.5rem 0.75rem',
+                  border: '1px solid #d1d5db',
+                  color: '#111827',
+                  fontSize: '0.875rem',
+                  outline: 'none'
+                }}
                 placeholder="Email address"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
               />
             </div>
             <div>
-              <label htmlFor="password" className="sr-only">
+              <label htmlFor="password" style={{ display: 'none' }}>
                 Password
               </label>
               <input
@@ -71,7 +114,19 @@ export default function SignIn() {
                 type="password"
                 autoComplete="current-password"
                 required
-                className="appearance-none rounded-none relative block w-full px-3 py-2 border border-gray-300 placeholder-gray-500 text-gray-900 rounded-b-md focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 focus:z-10 sm:text-sm"
+                style={{
+                  appearance: 'none',
+                  borderRadius: '0 0 0.375rem 0.375rem',
+                  position: 'relative',
+                  display: 'block',
+                  width: '100%',
+                  padding: '0.5rem 0.75rem',
+                  border: '1px solid #d1d5db',
+                  borderTop: 'none',
+                  color: '#111827',
+                  fontSize: '0.875rem',
+                  outline: 'none'
+                }}
                 placeholder="Password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
@@ -80,14 +135,45 @@ export default function SignIn() {
           </div>
 
           {error && (
-            <div className="text-red-600 text-sm text-center">{error}</div>
+            <div style={{
+              color: '#dc2626',
+              fontSize: '0.875rem',
+              textAlign: 'center'
+            }}>
+              {error}
+            </div>
           )}
 
           <div>
             <button
               type="submit"
               disabled={loading}
-              className="group relative w-full flex justify-center py-2 px-4 border border-transparent text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50"
+              style={{
+                position: 'relative',
+                width: '100%',
+                display: 'flex',
+                justifyContent: 'center',
+                padding: '0.5rem 1rem',
+                border: '1px solid transparent',
+                fontSize: '0.875rem',
+                fontWeight: '500',
+                borderRadius: '0.375rem',
+                color: 'white',
+                backgroundColor: '#4f46e5',
+                cursor: loading ? 'not-allowed' : 'pointer',
+                opacity: loading ? 0.5 : 1,
+                outline: 'none'
+              }}
+              onMouseEnter={(e) => {
+                if (!loading) {
+                  e.currentTarget.style.backgroundColor = '#4338ca';
+                }
+              }}
+              onMouseLeave={(e) => {
+                if (!loading) {
+                  e.currentTarget.style.backgroundColor = '#4f46e5';
+                }
+              }}
             >
               {loading ? "Signing in..." : "Sign in"}
             </button>
