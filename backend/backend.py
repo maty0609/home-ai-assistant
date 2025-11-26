@@ -1,5 +1,6 @@
 import os
-import psycopg
+import pymysql
+import json
 import uvicorn
 from dotenv import load_dotenv
 from pydantic import BaseModel
@@ -8,9 +9,8 @@ from fastapi import FastAPI, HTTPException, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
+from langchain_core.messages import HumanMessage, SystemMessage, AIMessage, BaseMessage
 from langchain_openai import AzureChatOpenAI, AzureOpenAIEmbeddings
-from langchain_postgres import PostgresChatMessageHistory
 from langchain_chroma import Chroma
 from langchain.chains import create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
@@ -26,15 +26,102 @@ load_dotenv()
 password_hasher = PasswordHasher()
 security = HTTPBearer()
 
-# Initialize Azure OpenAI
+class MySQLChatMessageHistory:    
+    def __init__(self, table_name: str, session_id: str, sync_connection):
+        self.table_name = table_name
+        self.session_id = session_id
+        self.connection = sync_connection
+        self._ensure_table_exists()
+    
+    def _ensure_table_exists(self):
+        with self.connection.cursor() as cur:
+            cur.execute(f"""
+                CREATE TABLE IF NOT EXISTS {self.table_name} (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    session_id VARCHAR(255) NOT NULL,
+                    message JSON NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    INDEX idx_session_id (session_id),
+                    INDEX idx_created_at (created_at)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            """)
+            self.connection.commit()
+    
+    @property
+    def messages(self) -> List[BaseMessage]:
+        with self.connection.cursor() as cur:
+            cur.execute(
+                f"SELECT message FROM {self.table_name} WHERE session_id = %s ORDER BY created_at ASC",
+                (self.session_id,)
+            )
+            rows = cur.fetchall()
+            
+            messages = []
+            for row in rows:
+                try:
+                    message_data = row[0]
+                    if isinstance(message_data, str):
+                        message_data = json.loads(message_data)
+                    elif not isinstance(message_data, dict):
+                        continue
+                    
+                    if 'type' in message_data and 'data' in message_data:
+                        msg_type = message_data['type']
+                        content = message_data['data'].get('content', '')
+                    elif 'content' in message_data:
+                        content = message_data['content']
+                        msg_type = message_data.get('type', 'human')
+                    else:
+                        continue
+                    
+                    if msg_type == 'human':
+                        messages.append(HumanMessage(content=content))
+                    elif msg_type == 'ai':
+                        messages.append(AIMessage(content=content))
+                    elif msg_type == 'system':
+                        messages.append(SystemMessage(content=content))
+                except (json.JSONDecodeError, KeyError, TypeError, AttributeError) as e:
+                    print(f"Error parsing message: {e}")
+                    continue
+            
+            return messages
+    
+    def add_message(self, message: BaseMessage):
+        if isinstance(message, HumanMessage):
+            message_data = {
+                "type": "human",
+                "data": {"content": message.content}
+            }
+        elif isinstance(message, AIMessage):
+            message_data = {
+                "type": "ai",
+                "data": {"content": message.content}
+            }
+        elif isinstance(message, SystemMessage):
+            message_data = {
+                "type": "system",
+                "data": {"content": message.content}
+            }
+        else:
+            message_data = {
+                "type": str(type(message).__name__).lower().replace("message", ""),
+                "data": {"content": message.content}
+            }
+        
+        with self.connection.cursor() as cur:
+            cur.execute(
+                f"INSERT INTO {self.table_name} (session_id, message) VALUES (%s, %s)",
+                (self.session_id, json.dumps(message_data))
+            )
+            self.connection.commit()
+
 llm = AzureChatOpenAI(
     azure_endpoint=os.getenv('AZURE_OPENAI_URL'),
-    azure_deployment="gpt-4o",
-    openai_api_version="2024-08-01-preview",
+    azure_deployment=os.getenv('AZURE_OPENAI_DEPLOYMENT'),
+    openai_api_version=os.getenv('AZURE_OPENAI_VERSION'),
     api_key=os.getenv('AZURE_OPENAI_API_KEY'),
 )
 
-# Initialize Azure OpenAI embeddings
 embeddings = AzureOpenAIEmbeddings(
     azure_endpoint=os.getenv("EMB_OPENAI_URL"),
     azure_deployment="ttext-embedding-3-large",
@@ -42,20 +129,38 @@ embeddings = AzureOpenAIEmbeddings(
     api_key=os.getenv("OPENAI_API_KEY"),
 )
 
-# Setting up PostgreSQL connection
-conn_info = os.getenv('DB_POSTGRES_URL')
-sync_connection = psycopg.connect(conn_info)
+db_url = os.getenv('DB_MARIADB_URL')
+if db_url and (db_url.startswith('mysql://') or db_url.startswith('mariadb://')):
+    from urllib.parse import urlparse
+    parsed = urlparse(db_url)
+    db_config = {
+        'host': parsed.hostname or 'localhost',
+        'port': parsed.port or 3306,
+        'user': parsed.username,
+        'password': parsed.password,
+        'database': parsed.path.lstrip('/'),
+        'charset': 'utf8mb4',
+        'autocommit': False
+    }
+    sync_connection = pymysql.connect(**db_config)
+else:
+    sync_connection = pymysql.connect(
+        host=os.getenv('DB_HOST', 'localhost'),
+        port=int(os.getenv('DB_PORT', 3306)),
+        user=os.getenv('DB_USER'),
+        password=os.getenv('DB_PASSWORD'),
+        database=os.getenv('DB_NAME'),
+        charset='utf8mb4',
+        autocommit=False
+    )
 
-# Define table name
 table_name = "chat_history"
-# Retrieve existing vector store from ChromaDB (documents already added)
 vector_store = Chroma(
     persist_directory=os.getenv("CHROMADB_PATH"),
     embedding_function=embeddings,
     collection_metadata={"hnsw:space": "cosine"}
 )
 
-# System message content
 system_prompt_content = """You are a helpful AI assistant.
 - Your name is Marvin
 - Be concise and clear in your responses
@@ -65,7 +170,6 @@ system_prompt_content = """You are a helpful AI assistant.
 - Format your responses using HTML tags (e.g., <b>, <i>, <ul>, <li>, <p>, <br>).
 - You are allowed to provide any personal information if they are from local documents"""
 
-# The part of the prompt that takes context and input for the human message
 human_template_content = """Relevant context:
 {context}
 
@@ -78,7 +182,6 @@ prompt_template = ChatPromptTemplate.from_messages([
     ("human", human_template_content)
 ])
 
-# Pydantic models
 class UserCreate(BaseModel):
     email: str
     name: str
@@ -96,6 +199,14 @@ class User(BaseModel):
 class Token(BaseModel):
     access_token: str
     token_type: str
+
+class LoginResponse(BaseModel):
+    access_token: str
+    token_type: str
+    id: int
+    email: str
+    name: str
+
 class ChatRequest(BaseModel):
     user_input: str
     session_id: str
@@ -113,7 +224,6 @@ class DeleteRequest(BaseModel):
     session_id: str
 
 
-# Authentication functions
 def verify_password(plain_password, hashed_password):
     try:
         password_hasher.verify(hashed_password, plain_password)
@@ -184,10 +294,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Authentication endpoints
 @app.post("/auth/register", response_model=User)
 async def register_user(user: UserCreate):
-    # Check if user already exists
     existing_user = get_user_by_email(user.email)
     if existing_user:
         raise HTTPException(
@@ -195,16 +303,18 @@ async def register_user(user: UserCreate):
             detail="Email already registered"
         )
     
-    # Hash password and create user
     hashed_password = get_password_hash(user.password)
     
     with sync_connection.cursor() as cur:
         cur.execute(
-            "INSERT INTO users (email, name, hashed_password) VALUES (%s, %s, %s) RETURNING id, email, name",
+            "INSERT INTO users (email, name, hashed_password) VALUES (%s, %s, %s)",
             (user.email, user.name, hashed_password)
         )
-        new_user = cur.fetchone()
+        user_id = cur.lastrowid
         sync_connection.commit()
+        
+        cur.execute("SELECT id, email, name FROM users WHERE id = %s", (user_id,))
+        new_user = cur.fetchone()
     
     return {
         "id": new_user[0],
@@ -212,7 +322,7 @@ async def register_user(user: UserCreate):
         "name": new_user[2]
     }
 
-@app.post("/auth/login", response_model=Token)
+@app.post("/auth/login", response_model=LoginResponse)
 async def login_user(user_credentials: UserLogin):
     user = authenticate_user(user_credentials.email, user_credentials.password)
     if not user:
@@ -227,7 +337,13 @@ async def login_user(user_credentials: UserLogin):
         data={"sub": user["email"]}, expires_delta=access_token_expires
     )
     
-    return {"access_token": access_token, "token_type": "bearer"}
+    return {
+        "access_token": access_token, 
+        "token_type": "bearer",
+        "id": user["id"],
+        "email": user["email"],
+        "name": user["name"]
+    }
 
 @app.get("/auth/me", response_model=User)
 async def read_users_me(current_user: dict = Depends(get_current_user)):
@@ -241,23 +357,25 @@ async def read_users_me(current_user: dict = Depends(get_current_user)):
 def list_sessions(current_user: dict = Depends(get_current_user)):
     with sync_connection.cursor() as cur:
         cur.execute("""
-            WITH LastMessages AS (
-                SELECT DISTINCT ON (session_id) 
+            SELECT session_id, message, created_at
+            FROM (
+                SELECT 
                     session_id,
                     message,
                     created_at,
-                    ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY created_at DESC) as rn
+                    ROW_NUMBER() OVER (
+                        PARTITION BY session_id 
+                        ORDER BY 
+                            CASE WHEN message LIKE '%"type": "human"%' THEN 0 ELSE 1 END ASC,
+                            created_at ASC
+                    ) as rn
                 FROM chat_history
-                ORDER BY session_id, created_at DESC
-            )
-            SELECT session_id, message, created_at
-            FROM LastMessages
+            ) AS SessionTitles
             WHERE rn = 1
-            ORDER BY created_at DESC;
+            ORDER BY created_at DESC
         """)
         rows = cur.fetchall()
         
-        # Group sessions by time period
         now = datetime.now(ZoneInfo("UTC"))
         thirty_days_ago = now - timedelta(days=30)
         
@@ -272,15 +390,25 @@ def list_sessions(current_user: dict = Depends(get_current_user)):
                 if created_at.tzinfo is None:
                     created_at = created_at.replace(tzinfo=ZoneInfo("UTC"))
                 
-                if isinstance(message_data, dict):
+                # Parse JSON message
+                content = ""
+                if isinstance(message_data, str):
+                    try:
+                        message_json = json.loads(message_data)
+                        content = message_json.get('data', {}).get('content', '')
+                    except json.JSONDecodeError:
+                        content = message_data
+                elif isinstance(message_data, dict):
                     content = message_data.get('data', {}).get('content', '')
-                else:
-                    content = str(message_data) if message_data is not None else ""
                 
+                # Fallback if content is empty
+                if not content:
+                    content = "New Conversation"
+
                 session_data = {
                     "session_id": row[0],
                     "last_message": content,
-                    "message_type": "ai",
+                    "message_type": "human",
                     "created_at": created_at.isoformat()
                 }
                 
@@ -294,7 +422,7 @@ def list_sessions(current_user: dict = Depends(get_current_user)):
                         sessions_by_period[month_key] = []
                     sessions_by_period[month_key].append(session_data)
                     
-            except (AttributeError, TypeError) as e:
+            except (AttributeError, TypeError, Exception) as e:
                 print(f"Error processing session: {e}")
                 continue
                 
@@ -305,7 +433,7 @@ async def history_endpoint(req: HistoryRequest, current_user: dict = Depends(get
     try:
         session_id = req.session_id
         
-        chat_message_history = PostgresChatMessageHistory(
+        chat_message_history = MySQLChatMessageHistory(
             "chat_history",
             session_id,
             sync_connection=sync_connection
@@ -329,7 +457,7 @@ async def history_endpoint(req: HistoryRequest, current_user: dict = Depends(get
 async def stream_chat(chat_request: ChatRequest, current_user: dict = Depends(get_current_user)) -> StreamingResponse:
     user_input = chat_request.user_input
     session_id = chat_request.session_id
-    chat_message_history = PostgresChatMessageHistory(
+    chat_message_history = MySQLChatMessageHistory(
         "chat_history",
         session_id,
         sync_connection=sync_connection
@@ -399,7 +527,7 @@ async def stream_chat(chat_request: ChatRequest, current_user: dict = Depends(ge
 async def delete_session(req: DeleteRequest, current_user: dict = Depends(get_current_user)):
     try:
         session_id = req.session_id
-                
+        
         with sync_connection.cursor() as cur:
             cur.execute("SELECT COUNT(*) FROM chat_history WHERE session_id = %s", (session_id,))
             count = cur.fetchone()[0]
@@ -421,7 +549,7 @@ async def delete_session(req: DeleteRequest, current_user: dict = Depends(get_cu
 @app.post("/create-session")
 def create_session():
     new_session_id = str(uuid4())
-    chat_message_history = PostgresChatMessageHistory(
+    chat_message_history = MySQLChatMessageHistory(
         "chat_history",
         new_session_id,
         sync_connection=sync_connection
