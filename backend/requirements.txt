@@ -3,7 +3,7 @@ langchain-openai==0.3.27
 langchain-core==0.3.68
 chromadb==1.0.15
 langchain-chroma==0.2.4
-fastapi==0.116.1
+fastapi==0.120.0
 langserve==0.3.1
 sse_starlette==2.4.1
 pymupdf==1.26.3
