@@ -1,18 +1,4 @@
 services:
-  postgres:
-    image: postgres:15
-    container_name: home-ai-postgres
-    environment:
-      - POSTGRES_DB=${POSTGRES_DB}
-      - POSTGRES_USER=${POSTGRES_USER}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-    ports:
-      - ${POSTGRES_PORT}:${POSTGRES_PORT}
-    volumes:
-      - ${POSTGRES_DB_PATH}:/var/lib/postgresql/data
-    networks:
-      - home-ai-network
-    restart: unless-stopped
 
   backend:
     build:
@@ -26,7 +12,7 @@ services:
       - AZURE_OPENAI_API_KEY=${AZURE_OPENAI_API_KEY}
       - EMB_OPENAI_URL=${EMB_OPENAI_URL}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - DB_POSTGRES_URL=${DB_POSTGRES_URL_DOCKER}
+      - DB_MARIADB_URL=${DB_MARIADB_URL}
       - CHROMADB_PATH=/app/chroma_db
       - SECRET_KEY=${SECRET_KEY}
       - NEXT_PUBLIC_API_URL=http://backend:${BACKEND_PORT}
@@ -35,8 +21,6 @@ services:
     networks:
       - home-ai-network
     restart: unless-stopped
-    depends_on:
-      - postgres
 
   frontend:
     build:

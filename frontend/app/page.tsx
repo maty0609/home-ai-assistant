@@ -7,10 +7,10 @@ import { v4 as uuidv4 } from 'uuid';
 // This is a simple Next.js 13 App Router page that mirrors your previous index.js page functionality.
 export default function Home() {
   const { data: session, status } = useSession();
-  
+
   // Generate a new UUID for the initial session
   const [sessionId, setSessionId] = useState(uuidv4());
-  
+
   // Entire chat history from the backend
   const [chatHistory, setChatHistory] = useState<string[]>([]);
 
@@ -22,7 +22,7 @@ export default function Home() {
 
   // Ref for the scrollable container in the right pane
   const chatContainerRef = useRef<HTMLDivElement>(null);
-  
+
   // Ref for the dummy div at the bottom of the chat for scrolling
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -47,10 +47,10 @@ export default function Home() {
   // Helper to call your /history endpoint
   const getHistory = useCallback(async () => {
     if (status !== "authenticated") return;
-    
+
     try {
       const headers: HeadersInit = { "Content-Type": "application/json" };
-      
+
       // Add authentication header if session exists
       if (session?.accessToken) {
         headers.Authorization = `Bearer ${session.accessToken}`;
@@ -81,9 +81,9 @@ export default function Home() {
   // 2) Fetch the sessions list on mount (or any time you choose)
   useEffect(() => {
     if (status !== "authenticated") return;
-    
+
     setSessionsLoading(true);
-    
+
     const headers: HeadersInit = {};
     if (session?.accessToken) {
       headers.Authorization = `Bearer ${session.accessToken}`;
@@ -191,7 +191,7 @@ export default function Home() {
   async function deleteSession(sessionId: string, e: React.MouseEvent) {
     e.stopPropagation(); // Prevent triggering the conversation click
     if (!confirm('Are you sure you want to delete this conversation?')) return;
-    
+
     try {
       const headers: HeadersInit = { "Content-Type": "application/json" };
       if (session?.accessToken) {
@@ -215,7 +215,7 @@ export default function Home() {
         if (sessionsData && sessionsData.sessions) {
           setSessions(sessionsData.sessions);
         }
-        
+
         // If the deleted session was the current one, create a new session
         if (sessionId === sessionId) {
           setSessionId(uuidv4());
@@ -295,8 +295,8 @@ export default function Home() {
                 if (session?.accessToken) {
                   headers.Authorization = `Bearer ${session.accessToken}`;
                 }
-                
-                const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/create-session`, { 
+
+                const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/create-session`, {
                   method: "POST",
                   headers
                 });
@@ -343,9 +343,9 @@ export default function Home() {
           ) : (
             Object.entries(sessions || {}).map(([period, periodSessions]) => (
               <div key={period} style={{ marginBottom: "1.5rem" }}>
-                <h4 style={{ 
-                  fontSize: "0.9em", 
-                  color: "black", 
+                <h4 style={{
+                  fontSize: "0.9em",
+                  color: "black",
                   marginBottom: "0.5rem",
                   paddingLeft: "1.2rem",
                   fontWeight: "bold"
@@ -360,8 +360,8 @@ export default function Home() {
                         setSessionId(session.session_id);
                         getHistory(); // load that session's history
                       }}
-                      style={{ 
-                        cursor: "pointer", 
+                      style={{
+                        cursor: "pointer",
                         marginBottom: "0.5rem",
                         padding: "0.5rem",
                         border: "1px solid #eee",
@@ -369,8 +369,8 @@ export default function Home() {
                         backgroundColor: "#f9f9f9"
                       }}
                     >
-                      <div style={{ 
-                        fontSize: "0.9em", 
+                      <div style={{
+                        fontSize: "0.9em",
                         color: "#666",
                         whiteSpace: "nowrap",
                         overflow: "hidden",
@@ -381,8 +381,8 @@ export default function Home() {
                         alignItems: "center"
                       }}>
                         <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis" }}>
-                          {typeof session.last_message === 'string' 
-                            ? session.last_message.length > 50 
+                          {typeof session.last_message === 'string'
+                            ? session.last_message.length > 50
                               ? session.last_message.substring(0, 50) + "..."
                               : session.last_message
                             : JSON.stringify(session.last_message)}
