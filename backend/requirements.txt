@@ -2,7 +2,7 @@ langchain-community==0.3.27
 langchain-openai==0.3.27
 langchain-core==0.3.68
 chromadb==1.0.15
-langchain-chroma==0.2.4
+langchain-chroma==1.0.0
 fastapi==0.116.1
 langserve==0.3.1
 sse_starlette==2.4.1
