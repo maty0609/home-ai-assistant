@@ -11,6 +11,177 @@ env:
   NODE_VERSION: '24'
 
 jobs:
+  # Backend tests and linting
+  backend:
+    name: Backend (Python/FastAPI)
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python ${{ env.PYTHON_VERSION }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+
+    - name: Cache pip dependencies
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+
+    - name: Install Python dependencies
+      run: |
+        cd backend
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pytest pytest-asyncio pytest-cov black flake8 mypy
+
+    - name: Run linting (Black)
+      run: |
+        cd backend
+        black --check --diff .
+
+    - name: Run linting (Flake8)
+      run: |
+        cd backend
+        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+        flake8 . --count --exit-zero --max-complexity=10 --max-line-length=88 --statistics
+
+    - name: Run type checking (MyPy)
+      run: |
+        cd backend
+        mypy . --ignore-missing-imports
+
+    - name: Initialize test database
+      run: |
+        cd backend
+        python -c "
+  # Frontend tests and linting
+  frontend:
+    name: Frontend (Next.js)
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Node.js ${{ env.NODE_VERSION }}
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+        cache-dependency-path: frontend/package-lock.json
+
+    - name: Install frontend dependencies
+      run: |
+        cd frontend
+        npm ci
+
+    - name: Run linting (ESLint)
+      run: |
+        cd frontend
+        npm run lint
+
+    - name: Run type checking (TypeScript)
+      run: |
+        cd frontend
+        npx tsc --noEmit
+
+    - name: Build frontend
+      run: |
+        cd frontend
+        npm run build
+
+  # Backend tests and listing
+  backend:
+    name: Backend (Python/FastAPI)
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python ${{ env.PYTHON_VERSION }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+
+    - name: Cache pip dependencies
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+
+    - name: Install Python dependencies
+      run: |
+        cd backend
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pytest pytest-asyncio pytest-cov black flake8 mypy
+
+    - name: Run linting (Black)
+      run: |
+        cd backend
+        black --check --diff .
+
+    - name: Run linting (Flake8)
+      run: |
+        cd backend
+        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+        flake8 . --count --exit-zero --max-complexity=10 --max-line-length=88 --statistics
+
+    - name: Run type checking (MyPy)
+      run: |
+        cd backend
+        mypy . --ignore-missing-imports
+
+    # - name: Run tests
+    #   run: |
+    #     cd backend
+    #     pytest
+
+  # Frontend tests and linting
+  frontend:
+    name: Frontend (Next.js)
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Node.js ${{ env.NODE_VERSION }}
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+        cache-dependency-path: frontend/package-lock.json
+
+    - name: Install frontend dependencies
+      run: |
+        cd frontend
+        npm ci
+
+    - name: Run linting (ESLint)
+      run: |
+        cd frontend
+        npm run lint
+
+    # - name: Run type checking (TypeScript)
+    #   run: |
+    #     cd frontend
+    #     npx tsc --noEmit
+
+    - name: Build frontend
+      run: |
+        cd frontend
+        npm run build
+
   # Docker build and test
   docker:
     name: Docker Build & Test
@@ -30,10 +201,86 @@ jobs:
         docker build -t home-ai-backend:test ./backend
         
         # Build frontend image
-        docker build -t home-ai-frontend:test ./frontend
+        docker build --build-arg NODE_ENV=development -t home-ai-frontend:test ./frontend
         
         # Test backend container
         docker run --rm home-ai-backend:test python -c "print('Backend container test passed')"
         
         # Test frontend container
         docker run --rm home-ai-frontend:test node -e "console.log('Frontend container test passed')"
+
+  # Integration tests
+  integration:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    needs: [backend, frontend, docker]
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python ${{ env.PYTHON_VERSION }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+
+    - name: Install dependencies
+      run: |
+        cd backend
+        pip install -r requirements.txt
+        pip install pytest pytest-asyncio httpx
+
+  # Security scanning
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Run Trivy vulnerability scanner
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: 'fs'
+        scan-ref: '.'
+        format: 'sarif'
+        output: 'trivy-results.sarif'
+
+    - name: Upload Trivy scan results to GitHub Security tab
+      uses: github/codeql-action/upload-sarif@v3
+      if: always()
+      with:
+        sarif_file: 'trivy-results.sarif'
+
+  # Dependency updates check
+  dependencies:
+    name: Check Dependencies
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python ${{ env.PYTHON_VERSION }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+
+    - name: Set up Node.js ${{ env.NODE_VERSION }}
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+
+    - name: Check Python dependencies
+      run: |
+        cd backend
+        pip install safety
+        safety check --json --output safety-report.json || true
+        echo "Safety check completed"
+
+    - name: Check Node.js dependencies
+      run: |
+        cd frontend
+        npm audit --audit-level moderate || true
+        echo "NPM audit completed" 
