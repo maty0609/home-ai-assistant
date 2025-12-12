@@ -19,7 +19,6 @@ FROM base AS runner
 WORKDIR /app
 
 ENV NODE_ENV development
-RUN npm install
 RUN npm run dev
 ENV NEXT_TELEMETRY_DISABLED 1
 
