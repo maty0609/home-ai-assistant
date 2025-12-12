@@ -94,7 +94,7 @@ jobs:
     - name: Build frontend
       run: |
         cd frontend
-        npm run build
+        npm run dev
 
   # Backend tests and listing
   backend:
