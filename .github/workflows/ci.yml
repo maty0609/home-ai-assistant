@@ -180,7 +180,7 @@ jobs:
     - name: Build frontend
       run: |
         cd frontend
-        npm run build
+        npm run dev
 
   # Docker build and test
   docker:
