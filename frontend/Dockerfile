@@ -14,12 +14,12 @@ COPY . .
 
 ENV NEXT_TELEMETRY_DISABLED 1
 
+RUN npm run dev
 
 FROM base AS runner
 WORKDIR /app
 
 ENV NODE_ENV development
-RUN npm run dev
 ENV NEXT_TELEMETRY_DISABLED 1
 
 RUN addgroup --system --gid 1001 nodejs
