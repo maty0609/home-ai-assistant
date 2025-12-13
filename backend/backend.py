@@ -2,6 +2,7 @@ import os
 import pymysql
 import json
 import uvicorn
+
 from dotenv import load_dotenv
 from pydantic import BaseModel
 from typing import List, AsyncGenerator, Optional
@@ -129,30 +130,42 @@ embeddings = AzureOpenAIEmbeddings(
     api_key=os.getenv("OPENAI_API_KEY"),
 )
 
-db_url = os.getenv('DB_MARIADB_URL')
-if db_url and (db_url.startswith('mysql://') or db_url.startswith('mariadb://')):
-    from urllib.parse import urlparse
-    parsed = urlparse(db_url)
-    db_config = {
-        'host': parsed.hostname or 'localhost',
-        'port': parsed.port or 3306,
-        'user': parsed.username,
-        'password': parsed.password,
-        'database': parsed.path.lstrip('/'),
-        'charset': 'utf8mb4',
-        'autocommit': False
-    }
-    sync_connection = pymysql.connect(**db_config)
-else:
-    sync_connection = pymysql.connect(
-        host=os.getenv('DB_HOST', 'localhost'),
-        port=int(os.getenv('DB_PORT', 3306)),
-        user=os.getenv('DB_USER'),
-        password=os.getenv('DB_PASSWORD'),
-        database=os.getenv('DB_NAME'),
-        charset='utf8mb4',
-        autocommit=False
-    )
+
+def get_db_connection():
+    db_url = os.getenv('DB_MARIADB_URL')
+    if db_url and (db_url.startswith('mysql://') or db_url.startswith('mariadb://')):
+        from urllib.parse import urlparse
+        parsed = urlparse(db_url)
+        db_config = {
+            'host': parsed.hostname or 'localhost',
+            'port': parsed.port or 3306,
+            'user': parsed.username,
+            'password': parsed.password,
+            'database': parsed.path.lstrip('/'),
+            'charset': 'utf8mb4',
+            'autocommit': False
+        }
+        return pymysql.connect(**db_config)
+    else:
+        return pymysql.connect(
+            host=os.getenv('DB_HOST', 'localhost'),
+            port=int(os.getenv('DB_PORT', 3306)),
+            user=os.getenv('DB_USER'),
+            password=os.getenv('DB_PASSWORD'),
+            database=os.getenv('DB_NAME'),
+            charset='utf8mb4',
+            autocommit=False
+        )
+
+def get_db():
+    db = get_db_connection()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+
 
 table_name = "chat_history"
 vector_store = Chroma(
@@ -244,8 +257,8 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     encoded_jwt = jwt.encode(to_encode, os.getenv("SECRET_KEY"), algorithm="HS256")
     return encoded_jwt
 
-def get_user_by_email(email: str):
-    with sync_connection.cursor() as cur:
+def get_user_by_email(email: str, db):
+    with db.cursor() as cur:
         cur.execute("SELECT id, email, name, hashed_password FROM users WHERE email = %s", (email,))
         user = cur.fetchone()
         if user:
@@ -257,15 +270,17 @@ def get_user_by_email(email: str):
             }
     return None
 
-def authenticate_user(email: str, password: str):
-    user = get_user_by_email(email)
+
+def authenticate_user(email: str, password: str, db):
+    user = get_user_by_email(email, db)
     if not user:
         return False
     if not verify_password(password, user["hashed_password"]):
         return False
     return user
 
-async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
+
+async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security), db = Depends(get_db)):
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
@@ -279,10 +294,11 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
     except JWTError:
         raise credentials_exception
     
-    user = get_user_by_email(email)
+    user = get_user_by_email(email, db)
     if user is None:
         raise credentials_exception
     return user
+
 
 app = FastAPI()
 
@@ -295,8 +311,9 @@ app.add_middleware(
 )
 
 @app.post("/auth/register", response_model=User)
-async def register_user(user: UserCreate):
-    existing_user = get_user_by_email(user.email)
+async def register_user(user: UserCreate, db = Depends(get_db)):
+    existing_user = get_user_by_email(user.email, db)
+
     if existing_user:
         raise HTTPException(
             status_code=400,
@@ -305,16 +322,17 @@ async def register_user(user: UserCreate):
     
     hashed_password = get_password_hash(user.password)
     
-    with sync_connection.cursor() as cur:
+    with db.cursor() as cur:
         cur.execute(
             "INSERT INTO users (email, name, hashed_password) VALUES (%s, %s, %s)",
             (user.email, user.name, hashed_password)
         )
         user_id = cur.lastrowid
-        sync_connection.commit()
+        db.commit()
         
         cur.execute("SELECT id, email, name FROM users WHERE id = %s", (user_id,))
         new_user = cur.fetchone()
+
     
     return {
         "id": new_user[0],
@@ -323,8 +341,9 @@ async def register_user(user: UserCreate):
     }
 
 @app.post("/auth/login", response_model=LoginResponse)
-async def login_user(user_credentials: UserLogin):
-    user = authenticate_user(user_credentials.email, user_credentials.password)
+async def login_user(user_credentials: UserLogin, db = Depends(get_db)):
+    user = authenticate_user(user_credentials.email, user_credentials.password, db)
+
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -354,8 +373,9 @@ async def read_users_me(current_user: dict = Depends(get_current_user)):
     }
 
 @app.get("/sessions")
-def list_sessions(current_user: dict = Depends(get_current_user)):
-    with sync_connection.cursor() as cur:
+def list_sessions(current_user: dict = Depends(get_current_user), db = Depends(get_db)):
+    with db.cursor() as cur:
+
         cur.execute("""
             SELECT session_id, message, created_at
             FROM (
@@ -429,15 +449,16 @@ def list_sessions(current_user: dict = Depends(get_current_user)):
     return {"sessions": sessions_by_period}
 
 @app.post("/history", response_model=HistoryResponse)
-async def history_endpoint(req: HistoryRequest, current_user: dict = Depends(get_current_user)):
+async def history_endpoint(req: HistoryRequest, current_user: dict = Depends(get_current_user), db = Depends(get_db)):
     try:
         session_id = req.session_id
         
         chat_message_history = MySQLChatMessageHistory(
             "chat_history",
             session_id,
-            sync_connection=sync_connection
+            sync_connection=db
         )
+
  
         timeline = []
         for msg in chat_message_history.messages:
@@ -454,14 +475,15 @@ async def history_endpoint(req: HistoryRequest, current_user: dict = Depends(get
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/chat")
-async def stream_chat(chat_request: ChatRequest, current_user: dict = Depends(get_current_user)) -> StreamingResponse:
+async def stream_chat(chat_request: ChatRequest, current_user: dict = Depends(get_current_user), db = Depends(get_db)) -> StreamingResponse:
     user_input = chat_request.user_input
     session_id = chat_request.session_id
     chat_message_history = MySQLChatMessageHistory(
         "chat_history",
         session_id,
-        sync_connection=sync_connection
+        sync_connection=db
     )
+
 
     retriever = vector_store.as_retriever(
         search_type="similarity_score_threshold",
@@ -477,14 +499,21 @@ async def stream_chat(chat_request: ChatRequest, current_user: dict = Depends(ge
     chat_message_history.add_message(user_message)
 
     async def generate() -> AsyncGenerator[bytes, None]:
+        stream_db = get_db_connection()
+        stream_history = MySQLChatMessageHistory(
+            "chat_history",
+            session_id,
+            sync_connection=stream_db
+        )
+        
         response_content = ""
         retrieved_document_sources = []
 
         try:
             chain_input = {"input": user_input}
             
-            if len(chat_message_history.messages) > 1:
-                chain_input["chat_history"] = chat_message_history.messages[:-1]
+            if len(stream_history.messages) > 1:
+                chain_input["chat_history"] = stream_history.messages[:-1]
             else:
                 chain_input["chat_history"] = []
 
@@ -515,30 +544,36 @@ async def stream_chat(chat_request: ChatRequest, current_user: dict = Depends(ge
                 final_ai_response_text_for_history += documents_used_suffix
             
             ai_message_to_store = AIMessage(content=final_ai_response_text_for_history)
-            chat_message_history.add_message(ai_message_to_store)
+            stream_history.add_message(ai_message_to_store)
 
         except Exception as exc:
-            print(f"Error during streaming chat: {exc}") 
+            print(f"Error during streaming chat: {exc}")
             yield f"\nStreaming error: An unexpected error occurred.".encode("utf-8")
+        finally:
+            stream_db.close()
+
+
+
 
     return StreamingResponse(generate(), media_type="text/plain")
 
 @app.post("/delete-session")
-async def delete_session(req: DeleteRequest, current_user: dict = Depends(get_current_user)):
+async def delete_session(req: DeleteRequest, current_user: dict = Depends(get_current_user), db = Depends(get_db)):
     try:
         session_id = req.session_id
         
-        with sync_connection.cursor() as cur:
+        with db.cursor() as cur:
+
             cur.execute("SELECT COUNT(*) FROM chat_history WHERE session_id = %s", (session_id,))
             count = cur.fetchone()[0]
             
             if count == 0:
                 raise HTTPException(status_code=404, detail="Session not found")
             
-            # Delete the session
             cur.execute("DELETE FROM chat_history WHERE session_id = %s", (session_id,))
             deleted_count = cur.rowcount
-            sync_connection.commit()
+            db.commit()
+
                         
         return {"status": "success", "deleted_count": deleted_count}
     except HTTPException as he:
@@ -547,13 +582,14 @@ async def delete_session(req: DeleteRequest, current_user: dict = Depends(get_cu
         raise HTTPException(status_code=500, detail=f"Failed to delete session: {str(e)}")
 
 @app.post("/create-session")
-def create_session():
+def create_session(db = Depends(get_db)):
     new_session_id = str(uuid4())
     chat_message_history = MySQLChatMessageHistory(
         "chat_history",
         new_session_id,
-        sync_connection=sync_connection
+        sync_connection=db
     )
+
     chat_message_history.add_message(SystemMessage(content=system_prompt_content))
     ai_message = AIMessage(content="Hey! I\'m Marvin, your AI assistant. How can I assist you?")
     chat_message_history.add_message(ai_message)
