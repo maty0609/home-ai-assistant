@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
-from langchain_openai import AzureChatOpenAI, AzureOpenAIEmbeddings
+from langchain_openai import AzureChatOpenAI, AzureOpenAIEmbeddings, ChatOpenAI, OpenAIEmbeddings
 from langchain_postgres import PostgresChatMessageHistory
 from langchain_chroma import Chroma
 from langchain.chains import create_retrieval_chain
@@ -26,21 +26,43 @@ load_dotenv()
 password_hasher = PasswordHasher()
 security = HTTPBearer()
 
-# Initialize Azure OpenAI
-llm = AzureChatOpenAI(
-    azure_endpoint=os.getenv('AZURE_OPENAI_URL'),
-    azure_deployment="gpt-4o",
-    openai_api_version="2024-08-01-preview",
-    api_key=os.getenv('AZURE_OPENAI_API_KEY'),
-)
+# Import configuration
+from .config import LLMConfig
 
-# Initialize Azure OpenAI embeddings
-embeddings = AzureOpenAIEmbeddings(
-    azure_endpoint=os.getenv("EMB_OPENAI_URL"),
-    azure_deployment="ttext-embedding-3-large",
-    api_version="2024-08-01-preview",
-    api_key=os.getenv("OPENAI_API_KEY"),
-)
+# Initialize LLM configuration
+llm_config = LLMConfig()
+
+# Initialize LLM based on configuration
+if llm_config.provider == "azure_openai":
+    llm = AzureChatOpenAI(
+        azure_endpoint=llm_config.azure_config["api_base"],
+        azure_deployment=llm_config.azure_config["deployment_name"],
+        openai_api_version="2024-08-01-preview",
+        api_key=llm_config.azure_config["api_key"],
+    )
+elif llm_config.provider == "openai":
+    llm = ChatOpenAI(
+        base_url=llm_config.openai_config["base_url"],
+        api_key=llm_config.openai_config["api_key"]
+    )
+else:
+    raise ValueError(f"Unsupported provider: {llm_config.provider}")
+
+# Initialize embeddings based on configuration
+if llm_config.provider == "azure_openai":
+    embeddings = AzureOpenAIEmbeddings(
+        azure_endpoint=llm_config.azure_config["api_base"],
+        azure_deployment=llm_config.azure_config["embedding_deployment_name"],
+        api_version="2024-08-01-preview",
+        api_key=llm_config.azure_config["api_key"],
+    )
+elif llm_config.provider == "openai":
+    embeddings = OpenAIEmbeddings(
+        base_url=llm_config.openai_config["base_url"],
+        api_key=llm_config.openai_config["api_key"]
+    )
+else:
+    raise ValueError(f"Unsupported provider: {llm_config.provider}")
 
 # Setting up PostgreSQL connection
 conn_info = os.getenv('DB_POSTGRES_URL')
