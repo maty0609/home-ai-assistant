@@ -16,10 +16,10 @@ const handler = NextAuth({
 
         try {
           console.log("Attempting login for:", credentials.email);
-          console.log("API URL:", process.env.API_URL);
+          console.log("API URL:", process.env.NEXT_PUBLIC_API_URL);
           
           // Call your backend to verify credentials
-          const response = await fetch(`${process.env.API_URL}/auth/login`, {
+          const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/auth/login`, {
             method: "POST",
             headers: {
               "Content-Type": "application/json",

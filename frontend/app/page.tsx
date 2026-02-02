@@ -118,7 +118,8 @@ export default function Home() {
 
   // Redirect to sign in if not authenticated
   if (status === "unauthenticated") {
-    return null; // Middleware will handle redirect
+    window.location.href = "/auth/signin";
+    return null;
   }
 
   // Updated sendMessage to use streaming from the new endpoint.
