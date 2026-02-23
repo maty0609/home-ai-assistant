@@ -1,10 +1,10 @@
 langchain-community==0.4.1
-langchain-openai==1.1.7
-langchain-core==1.2.8
-chromadb==1.4.1
+langchain-openai==1.1.10
+langchain-core==1.2.15
+chromadb==1.5.1
 langchain-chroma==1.1.0
-fastapi==0.128.0
-pymupdf==1.26.7
+fastapi==0.132.0
+pymupdf==1.27.1
 pymysql==1.1.2
 pydantic==2.12.5
 argon2-cffi==25.1.0
