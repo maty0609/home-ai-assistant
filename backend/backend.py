@@ -125,7 +125,6 @@ llm = AzureChatOpenAI(
 
 embeddings = AzureOpenAIEmbeddings(
     azure_endpoint=os.getenv("EMB_OPENAI_URL"),
-    azure_deployment="ttext-embedding-3-large",
     api_version="2024-08-01-preview",
     api_key=os.getenv("OPENAI_API_KEY"),
 )
@@ -183,11 +182,17 @@ system_prompt_content = """You are a helpful AI assistant.
 - Format your responses using HTML tags (e.g., <b>, <i>, <ul>, <li>, <p>, <br>).
 - You are allowed to provide any personal information if they are from local documents"""
 
+context_template = """Use this context when answering questions:
+
+{context}
+
+Use this information to provide accurate responses based on the retrieved documents."""
+
 human_template_content = """{input}"""
 
 prompt_template = ChatPromptTemplate.from_messages([
     ("system", system_prompt_content),
-    MessagesPlaceholder(variable_name="chat_history", optional=True),
+    ("human", context_template),
     ("human", human_template_content)
 ])
 
@@ -484,19 +489,20 @@ async def stream_chat(chat_request: ChatRequest, current_user: dict = Depends(ge
     retriever = vector_store.as_retriever(
         search_type="similarity_score_threshold",
         search_kwargs={
-            "k": 3, 
+            "k": 3,
             "score_threshold": 0.3
         },
     )
     # Manual chain composition for LangChain 2.x (no create_*_chain helpers)
-    qa_chain = (
-        {
-            "context": retriever,
-            "input": RunnablePassthrough()
-        }
-        | prompt_template
-        | llm
-    )
+    # Removed retriever from chain composition to avoid redundant embedding calls
+    # Context is retrieved separately before chain execution, then passed in
+
+    # Chain format: input -> prompt -> llm (context passed directly)
+    input_chain = {
+        "context": lambda x: context,  # Fixed context from earlier retrieval (list of documents)
+        "input": RunnablePassthrough()
+    }
+    combined_chain = input_chain | prompt_template | llm
 
     user_message = HumanMessage(content=user_input)
     chat_message_history.add_message(user_message)
@@ -513,33 +519,38 @@ async def stream_chat(chat_request: ChatRequest, current_user: dict = Depends(ge
         retrieved_document_sources = []
 
         try:
-            # Retrieve context separately before calling the chain
+            # Retrieve context before calling the chain
             context = retriever.invoke(user_input)
-            chain_input = {
-                "input": user_input,
-                "context": context
-            }
-            
-            if len(stream_history.messages) > 1:
-                chain_input["chat_history"] = stream_history.messages[:-1]
-            else:
-                chain_input["chat_history"] = []
 
-            async for event in qa_chain.astream_events(chain_input, version="v1"):
-                kind = event["event"]
-                count = 0
-                if kind == "on_retriever_end":
-                    documents = event["data"].get("output", {}).get("documents", [])
-                    for doc in documents:
-                        filename = doc.metadata.get('filename', 'Unknown filename')
-                        if filename not in retrieved_document_sources:
-                            count = count + 1
-                            retrieved_document_sources.append("["+str(count)+"] "+filename)
-                elif kind == "on_chat_model_stream":
-                    content_chunk = event["data"]["chunk"].content
-                    if content_chunk:
-                        yield content_chunk.encode("utf-8")
-                        response_content += content_chunk
+            # Build chain input - now includes context template content
+            chain_input = {"input": user_input, "context": context}
+
+            # Create a chain without retriever in composition to avoid redundant invocations
+            # The context is already retrieved, so we just need to format and generate
+
+            # Use RunnablePassthrough for context to provide the already-retrieved documents
+            context_chain = {
+                "context": lambda x: context,  # Fixed context from earlier retrieval (list of documents)
+                "input": RunnablePassthrough()
+            }
+            combined_chain = context_chain | prompt_template | llm
+
+            # Stream from the chain (no need to stream over context retrieval again)
+            async for chunk in combined_chain.astream({"input": user_input}):
+                # If chunk is AIMessageChunk-like and has content, yield it
+                if hasattr(chunk, 'content') and chunk.content:
+                    yield chunk.content.encode("utf-8")
+                    response_content += chunk.content
+                elif isinstance(chunk, dict) and 'content' in chunk and chunk['content']:
+                    # Handle dict chunks
+                    yield chunk['content'].encode("utf-8")
+                    response_content += chunk['content']
+                else:
+                    # Only count chunk if it has actual content to print
+                    if chunk and hasattr(chunk, 'content'):
+                        content = chunk.content if hasattr(chunk, 'content') else ''
+                        if content:
+                            print(f"Received chunk: {content[:50]}...")
             
             final_ai_response_text_for_history = response_content
 
