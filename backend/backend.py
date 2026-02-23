@@ -13,9 +13,9 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage, BaseMessage
 from langchain_openai import AzureChatOpenAI, AzureOpenAIEmbeddings
 from langchain_chroma import Chroma
-from langchain.chains import create_retrieval_chain
-from langchain.chains.combine_documents import create_stuff_documents_chain
-from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.runnables import RunnablePassthrough
+from langchain_core.output_parsers import StrOutputParser
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from uuid import uuid4
@@ -183,11 +183,7 @@ system_prompt_content = """You are a helpful AI assistant.
 - Format your responses using HTML tags (e.g., <b>, <i>, <ul>, <li>, <p>, <br>).
 - You are allowed to provide any personal information if they are from local documents"""
 
-human_template_content = """Relevant context:
-{context}
-
-Answer the user based on any relevant history and the provided context:
-{input}"""
+human_template_content = """{input}"""
 
 prompt_template = ChatPromptTemplate.from_messages([
     ("system", system_prompt_content),
@@ -492,8 +488,15 @@ async def stream_chat(chat_request: ChatRequest, current_user: dict = Depends(ge
             "score_threshold": 0.3
         },
     )
-    combine_docs_chain = create_stuff_documents_chain(llm=llm, prompt=prompt_template)
-    qa_chain = create_retrieval_chain(retriever, combine_docs_chain)
+    # Manual chain composition for LangChain 2.x (no create_*_chain helpers)
+    qa_chain = (
+        {
+            "context": retriever,
+            "input": RunnablePassthrough()
+        }
+        | prompt_template
+        | llm
+    )
 
     user_message = HumanMessage(content=user_input)
     chat_message_history.add_message(user_message)
@@ -510,7 +513,12 @@ async def stream_chat(chat_request: ChatRequest, current_user: dict = Depends(ge
         retrieved_document_sources = []
 
         try:
-            chain_input = {"input": user_input}
+            # Retrieve context separately before calling the chain
+            context = retriever.invoke(user_input)
+            chain_input = {
+                "input": user_input,
+                "context": context
+            }
             
             if len(stream_history.messages) > 1:
                 chain_input["chat_history"] = stream_history.messages[:-1]
