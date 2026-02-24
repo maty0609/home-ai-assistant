@@ -5,7 +5,7 @@ import uvicorn
 
 from dotenv import load_dotenv
 from pydantic import BaseModel
-from typing import List, AsyncGenerator, Optional
+from typing import List, AsyncGenerator, Optional, Dict, Any
 from fastapi import FastAPI, HTTPException, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -149,13 +149,12 @@ def get_db_connection():
         return pymysql.connect(
             host=os.getenv('DB_HOST', 'localhost'),
             port=int(os.getenv('DB_PORT', 3306)),
-            user=os.getenv('DB_USER'),
-            password=os.getenv('DB_PASSWORD'),
-            database=os.getenv('DB_NAME'),
+            user=os.getenv('DB_USER', 'root'),
+            password=os.getenv('DB_PASSWORD', ''),
+            database=os.getenv('DB_NAME', 'langchain'),
             charset='utf8mb4',
             autocommit=False
         )
-
 def get_db():
     db = get_db_connection()
     try:
@@ -165,13 +164,61 @@ def get_db():
 
 
 
-
 table_name = "chat_history"
-vector_store = Chroma(
-    persist_directory=os.getenv("CHROMADB_PATH"),
-    embedding_function=embeddings,
-    collection_metadata={"hnsw:space": "cosine"}
-)
+
+# Helper function to safely create or load the Chroma vector store
+def get_vector_store() -> Chroma:
+    """Get or create the Chroma vector store with proper HNSW index handling."""
+    persist_dir = os.getenv("CHROMADB_PATH")
+    if not persist_dir or not os.path.exists(persist_dir):
+        # Create the directory if it doesn't exist
+        os.makedirs(persist_dir, exist_ok=True)
+        # Create an empty collection with proper metadata
+        collection = Chroma(
+            persist_directory=persist_dir,
+            persist=True,
+            embedding_function=embeddings,
+            collection_metadata={"hnsw:space": "cosine"}
+        )
+        # Ensure the collection exists by attempting a basic operation
+        collection.get(limit=1)
+        return collection
+    
+    try:
+        # Try to load the existing collection
+        collection = Chroma(
+            persist_directory=persist_dir,
+            embedding_function=embeddings,
+            collection_metadata={"hnsw:space": "cosine"}
+        )
+        # Test that the collection is accessible by trying to get metadata
+        collection.get(limit=1)
+        return collection
+    except Exception as e:
+        # If loading fails (e.g., due to corrupted HNSW index), recreate the collection
+        print(f"Error loading Chroma collection: {e}. Recreating the collection.")
+        # Remove the old directory and create a fresh one
+        import shutil
+        temp_dir = persist_dir + "_temp_backup"
+        if os.path.exists(persist_dir):
+            try:
+                shutil.move(persist_dir, temp_dir)
+            except Exception as backup_error:
+                print(f"Could not backup existing collection: {backup_error}")
+        
+        # Create new persistent directory and collection
+        os.makedirs(persist_dir, exist_ok=True)
+        collection = Chroma(
+            persist_directory=persist_dir,
+            embedding_function=embeddings,
+            collection_metadata={"hnsw:space": "cosine"}
+        )
+        # Ensure collection is functional
+        collection.get(limit=1)
+        return collection
+
+
+vector_store = get_vector_store()
 
 system_prompt_content = """You are a helpful AI assistant.
 - Your name is Marvin
@@ -460,7 +507,6 @@ async def history_endpoint(req: HistoryRequest, current_user: dict = Depends(get
             sync_connection=db
         )
 
- 
         timeline = []
         for msg in chat_message_history.messages:
             if isinstance(msg, SystemMessage):
@@ -554,6 +600,16 @@ async def stream_chat(chat_request: ChatRequest, current_user: dict = Depends(ge
             
             final_ai_response_text_for_history = response_content
 
+            # Extract document sources from the retrieved context
+            retrieved_document_sources = []
+            if context:
+                for doc in context:
+                    if hasattr(doc, 'metadata'):
+                        source = doc.metadata.get('source', '')
+                        filename = doc.metadata.get('filename', source.split('/')[-1])
+                        if source:
+                            retrieved_document_sources.append(f"{filename} ({source})")
+
             if retrieved_document_sources:
                 sources_text = "<br>".join(retrieved_document_sources)
                 documents_used_suffix = f"<br><hr><br><p><b>Related documents</b><br>{sources_text}</p>"
@@ -561,16 +617,21 @@ async def stream_chat(chat_request: ChatRequest, current_user: dict = Depends(ge
                 yield documents_used_suffix.encode("utf-8")
                 
                 final_ai_response_text_for_history += documents_used_suffix
-            
+            else:
+                # Add a placeholder message that no documents were found
+                documents_used_suffix = "<br><hr><br><p><i>No documents found in context.</i></p>"
+                final_ai_response_text_for_history += documents_used_suffix
+                yield documents_used_suffix.encode("utf-8")
+
             ai_message_to_store = AIMessage(content=final_ai_response_text_for_history)
             stream_history.add_message(ai_message_to_store)
 
         except Exception as exc:
-            print(f"Error during streaming chat: {exc}")
-            yield f"\nStreaming error: An unexpected error occurred.".encode("utf-8")
+            error_msg = f"Error during streaming chat: {exc}. No documents retrieved for this query."
+            print(error_msg)
+            yield f"\n{error_msg}".encode("utf-8")
         finally:
             stream_db.close()
-
 
 
 
@@ -582,7 +643,6 @@ async def delete_session(req: DeleteRequest, current_user: dict = Depends(get_cu
         session_id = req.session_id
         
         with db.cursor() as cur:
-
             cur.execute("SELECT COUNT(*) FROM chat_history WHERE session_id = %s", (session_id,))
             count = cur.fetchone()[0]
             
@@ -593,7 +653,7 @@ async def delete_session(req: DeleteRequest, current_user: dict = Depends(get_cu
             deleted_count = cur.rowcount
             db.commit()
 
-                        
+            
         return {"status": "success", "deleted_count": deleted_count}
     except HTTPException as he:
         raise he
@@ -610,7 +670,7 @@ def create_session(db = Depends(get_db)):
     )
 
     chat_message_history.add_message(SystemMessage(content=system_prompt_content))
-    ai_message = AIMessage(content="Hey! I\'m Marvin, your AI assistant. How can I assist you?")
+    ai_message = AIMessage(content="Hey! I'm Marvin, your AI assistant. How can I assist you?")
     chat_message_history.add_message(ai_message)
 
     return {"session_id": new_session_id}
