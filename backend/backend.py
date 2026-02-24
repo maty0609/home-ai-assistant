@@ -188,7 +188,6 @@ def get_vector_store() -> Chroma:
         # Try to load the existing collection
         collection = Chroma(
             persist_directory=persist_dir,
-            persist=True,
             embedding_function=embeddings,
             collection_metadata={"hnsw:space": "cosine"}
         )
@@ -211,7 +210,6 @@ def get_vector_store() -> Chroma:
         os.makedirs(persist_dir, exist_ok=True)
         collection = Chroma(
             persist_directory=persist_dir,
-            persist=True,
             embedding_function=embeddings,
             collection_metadata={"hnsw:space": "cosine"}
         )
@@ -601,6 +599,16 @@ async def stream_chat(chat_request: ChatRequest, current_user: dict = Depends(ge
                             print(f"Received chunk: {content[:50]}...")
             
             final_ai_response_text_for_history = response_content
+
+            # Extract document sources from the retrieved context
+            retrieved_document_sources = []
+            if context:
+                for doc in context:
+                    if hasattr(doc, 'metadata'):
+                        source = doc.metadata.get('source', '')
+                        filename = doc.metadata.get('filename', source.split('/')[-1])
+                        if source:
+                            retrieved_document_sources.append(f"{filename} ({source})")
 
             if retrieved_document_sources:
                 sources_text = "<br>".join(retrieved_document_sources)
