@@ -13,7 +13,7 @@
     "test:e2e:report": "playwright show-report"
   },
   "dependencies": {
-    "@types/uuid": "^10.0.0",
+    "@types/uuid": "^11.0.0",
     "next": "^16.1.6",
     "next-auth": "^4.24.11",
     "react": "^19.1.0",
