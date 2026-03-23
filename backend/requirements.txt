@@ -4,7 +4,7 @@ langchain-core==1.2.15
 chromadb==1.5.1
 langchain-chroma==1.1.0
 fastapi==0.132.0
-pymupdf==1.27.1
+pymupdf==1.27.2.2
 pymysql==1.1.2
 pydantic==2.12.5
 argon2-cffi==25.1.0
