@@ -1,5 +1,5 @@
 langchain-community==0.4.1
-langchain-openai==1.1.10
+langchain-openai==1.2.1
 langchain-core==1.2.15
 chromadb==1.5.1
 langchain-chroma==1.1.0
